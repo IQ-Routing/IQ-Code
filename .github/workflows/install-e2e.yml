@@ -133,15 +133,16 @@ jobs:
             Check-List local-uninstalled $false
           }
           if ($script:Failed) { exit 1 }
-      - name: Configure job-only repository read access without printing credentials
+      - name: Clone the public repository like a new user (no token, no credential helper)
         id: auth
         if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
         run: |
           . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
-          # github.token is contents:read for this repository; global config is a job-temp file.
-          $key = 'url.https://x-access-token:' + $env:CI_GIT_TOKEN + '@github.com/.insteadOf'
-          & git config --global $key 'https://github.com/'
-          Save-Code git-auth $LASTEXITCODE
+          # The repository is public. An empty credential.helper clears every helper from the system config.
+          # Written directly to the job-temp global config because PowerShell can drop an empty native argument.
+          [IO.File]::AppendAllText($env:GIT_CONFIG_GLOBAL, "[credential]`n`thelper =`n")
+          & git config --global --get credential.helper | Out-Null
+          Save-Code git-no-helper $LASTEXITCODE
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: GitHub marketplace lifecycle (clones the DEFAULT branch)
         id: github
@@ -303,7 +304,8 @@ jobs:
               run('local-install', ['claude', 'plugin', 'install', 'iq-code@iq-routing', '--scope', 'user']); listing('local-installed', True)
               run('local-strict', ['claude', 'plugin', 'validate', '--strict', workspace])
               run('local-uninstall', ['claude', 'plugin', 'uninstall', 'iq-code@iq-routing', '--scope', 'user']); listing('local-uninstalled', False)
-              run('git-auth', ['git', 'config', '--global', 'url.https://x-access-token:' + os.environ['CI_GIT_TOKEN'] + '@github.com/.insteadOf', 'https://github.com/'])
+              # The repository is public: clone like a new user. An empty credential.helper clears system helpers such as osxkeychain.
+              run('git-no-helper', ['git', 'config', '--global', 'credential.helper', ''])
               (evidence / 'scope.txt').write_text('GitHub forms install IQ-Routing/IQ-Code at the DEFAULT branch. No login, model sessions, IQ-host downloads or key entry. Settings checks: keys other than the CLI-written enabledPlugins/extraKnownMarketplaces stay as seeded, and ~/.claude/settings.json is byte-identical.\n', encoding='utf-8')
               run('no-controlling-tty', ['sh', '-c', 'test ! -t 0 && ! (exec 3<>/dev/tty) 2>/dev/null'])
               for form in ('file', 'pipe'):
