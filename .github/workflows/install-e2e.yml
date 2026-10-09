@@ -1,0 +1,340 @@
+name: Install E2E
+'on':
+  push:
+    branches: [ci/windows-e2e]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+      DISABLE_AUTOUPDATER: '1'
+      CLAUDE_CODE_PLUGIN_PREFER_HTTPS: '1'
+      GIT_TERMINAL_PROMPT: '0'
+      GCM_INTERACTIVE: never
+      CI_GIT_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        id: node
+        with:
+          node-version: '22'
+      - name: Prepare isolated harness and install pinned CLI
+        id: tools
+        run: |
+          $env:CLAUDE_CONFIG_DIR = Join-Path $env:RUNNER_TEMP 'iq-ci-bootstrap'
+          $env:GIT_CONFIG_GLOBAL = Join-Path $env:RUNNER_TEMP 'iq-ci-gitconfig'
+          $env:IQ_EVIDENCE = Join-Path $env:RUNNER_TEMP 'iq-ci-evidence'
+          foreach ($name in @('CLAUDE_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'IQ_EVIDENCE')) {
+            "$name=$([Environment]::GetEnvironmentVariable($name))" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          }
+          New-Item -ItemType Directory -Force $env:IQ_EVIDENCE | Out-Null
+          @'
+          $script:Failed = $false
+          $nativeHome = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+          $script:HomeSettings = Join-Path $nativeHome '.claude\settings.json'
+          $script:IqData = Join-Path $nativeHome '.claude\iq'
+          function Redact([string]$Text) {
+            if ($env:CI_GIT_TOKEN) { $Text = $Text.Replace($env:CI_GIT_TOKEN, '[redacted]') }
+            return ($Text -replace 'https://x-access-token:[^@\s]+@github\.com/', 'https://github.com/')
+          }
+          function Save-Code([string]$Name, [int]$Code) {
+            [IO.File]::AppendAllText((Join-Path $env:IQ_EVIDENCE 'exit-codes.tsv'), "$Name`t$Code`n")
+            Write-Host "$Name exit=$Code"
+          }
+          function Check([string]$Name, [bool]$OK) {
+            Save-Code $Name ([int](-not $OK))
+            if (-not $OK) { $script:Failed = $true }
+          }
+          function Run([string]$Name, [string]$Exe, [string[]]$Argv, [int]$Expected = 0) {
+            $saved = $ErrorActionPreference
+            try {
+              $ErrorActionPreference = 'Continue'
+              # Explicitly redirected stdin prevents the optional IQ-key prompt.
+              $text = '' | & $Exe @Argv 2>&1 | Out-String
+              $code = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $saved }
+            $text = Redact $text
+            [IO.File]::WriteAllText((Join-Path $env:IQ_EVIDENCE "$Name.txt"), $text)
+            Save-Code $Name $code
+            Write-Host $text
+            if ($code -ne $Expected) { $script:Failed = $true }
+            return $text
+          }
+          function Snapshot([string]$Path) {
+            if (Test-Path -LiteralPath $Path) { return [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) }
+            return 'ABSENT'
+          }
+          function New-Case([string]$Name) {
+            $env:CLAUDE_CONFIG_DIR = Join-Path $env:RUNNER_TEMP "iq-ci-$Name"
+            New-Item -ItemType Directory -Force $env:CLAUDE_CONFIG_DIR | Out-Null
+            $path = Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json'
+            [IO.File]::WriteAllText($path, "{`r`n  `"permissions`": { `"allow`": [] }`r`n}`r`n", [Text.UTF8Encoding]::new($false))
+            return @{ Path = $path; Bytes = (Snapshot $path); HomeBytes = (Snapshot $script:HomeSettings) }
+          }
+          function Test-UserSettings([string]$Path) {
+            # The CLI itself records enabledPlugins and extraKnownMarketplaces; every other key must stay as seeded.
+            try { $o = [IO.File]::ReadAllText($Path) | ConvertFrom-Json } catch { return $false }
+            $keys = @($o.PSObject.Properties.Name | Where-Object { $_ -cne 'enabledPlugins' -and $_ -cne 'extraKnownMarketplaces' })
+            if ($keys.Count -ne 1 -or $keys[0] -cne 'permissions') { return $false }
+            return (@($o.permissions.PSObject.Properties.Name).Count -eq 1 -and @($o.permissions.allow).Count -eq 0)
+          }
+          function Check-Settings([string]$Name, $Before) {
+            Check "$Name-settings" (Test-UserSettings $Before.Path)
+            Check "$Name-home-settings" ((Snapshot $script:HomeSettings) -ceq $Before.HomeBytes)
+          }
+          function Check-List([string]$Name, [bool]$Installed) {
+            $text = Run "$Name-list" 'claude.cmd' @('plugin', 'list')
+            $ok = if ($Installed) { $text -match '(?s)iq-code@iq-routing.*?Version:\s*1\.0\.0\b.*?Status:[^\r\n]*enabled' }
+                  else { $text -notmatch 'iq-code@iq-routing' }
+            Check "$Name-state" $ok
+          }
+          function Case([string]$Name, [scriptblock]$Body) {
+            try { & $Body } catch {
+              $script:Failed = $true
+              Save-Code "$Name-exception" 1
+              $text = Redact $_.Exception.Message
+              [IO.File]::WriteAllText((Join-Path $env:IQ_EVIDENCE "$Name-exception.txt"), $text)
+              Write-Host $text
+            }
+          }
+          '@ | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          if (Test-Path -LiteralPath $script:IqData) { throw 'Expected a clean runner IQ data directory' }
+          Run npm 'npm.cmd' @('i', '-g', '@anthropic-ai/claude-code@2.1.293') | Out-Null
+          $version = Run version 'claude.cmd' @('--version')
+          Check version-pin ($version -match '^2\.1\.293\s')
+          if ($script:Failed) { exit 1 }
+      - name: Local checkout marketplace lifecycle and strict validation
+        id: local
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          Case local {
+            New-Case local | Out-Null
+            Run local-add 'claude.cmd' @('plugin', 'marketplace', 'add', $env:GITHUB_WORKSPACE) | Out-Null
+            Run local-install 'claude.cmd' @('plugin', 'install', 'iq-code@iq-routing', '--scope', 'user') | Out-Null
+            Check-List local-installed $true
+            Run local-strict 'claude.cmd' @('plugin', 'validate', '--strict', $env:GITHUB_WORKSPACE) | Out-Null
+            Run local-uninstall 'claude.cmd' @('plugin', 'uninstall', 'iq-code@iq-routing', '--scope', 'user') | Out-Null
+            Check-List local-uninstalled $false
+          }
+          if ($script:Failed) { exit 1 }
+      - name: Configure job-only repository read access without printing credentials
+        id: auth
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          # github.token is contents:read for this repository; global config is a job-temp file.
+          $key = 'url.https://x-access-token:' + $env:CI_GIT_TOKEN + '@github.com/.insteadOf'
+          & git config --global $key 'https://github.com/'
+          Save-Code git-auth $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: GitHub marketplace lifecycle (clones the DEFAULT branch)
+        id: github
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.auth.outcome == 'success' }}
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          Case github {
+            New-Case github | Out-Null
+            Run github-add 'claude.cmd' @('plugin', 'marketplace', 'add', 'IQ-Routing/IQ-Code') | Out-Null
+            Run github-install 'claude.cmd' @('plugin', 'install', 'iq-code@iq-routing', '--scope', 'user') | Out-Null
+            Check-List github-installed $true
+            Run github-uninstall 'claude.cmd' @('plugin', 'uninstall', 'iq-code@iq-routing', '--scope', 'user') | Out-Null
+            Check-List github-uninstalled $false
+          }
+          if ($script:Failed) { exit 1 }
+      - name: Native PS5.1 / PS7 File and iex, plus CMD; uninstall and settings preservation
+        id: installers
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' && steps.auth.outcome == 'success' }}
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          $ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $variants = @(
+            @{Name='ps51-file'; Exe=$ps51; Mode='file'; Purge=$false},
+            @{Name='ps51-iex'; Exe=$ps51; Mode='iex'; Purge=$true},
+            @{Name='ps7-file'; Exe=(Get-Command pwsh.exe).Source; Mode='file'; Purge=$true},
+            @{Name='ps7-iex'; Exe=(Get-Command pwsh.exe).Source; Mode='iex'; Purge=$false},
+            @{Name='cmd'; Exe=$env:ComSpec; Mode='cmd'; Purge=$true}
+          )
+          foreach ($v in $variants) {
+            Case $v.Name {
+              $before = New-Case $v.Name
+              $env:IQ_CODE_UNINSTALL = '0'; $env:IQ_CODE_PURGE = '0'
+              if ($v.Mode -eq 'cmd') { $argv = @('/d', '/c', 'install.cmd') }
+              elseif ($v.Mode -eq 'file') { $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\install.ps1') }
+              else { $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "`$ErrorActionPreference = 'Stop'; Get-Content -Raw .\install.ps1 | Invoke-Expression; Write-Output 'IQ_CI_CONTINUED'") }
+              $text = Run "$($v.Name)-install" $v.Exe $argv
+              if ($v.Mode -eq 'iex') { Check "$($v.Name)-install-continuation" ($text -match 'IQ_CI_CONTINUED') }
+              Check-List "$($v.Name)-installed" $true
+              Check-Settings "$($v.Name)-install" $before
+              Check "$($v.Name)-data-created" (Test-Path -LiteralPath $script:IqData)
+              New-Item -ItemType Directory -Force $script:IqData | Out-Null
+              [IO.File]::WriteAllText((Join-Path $script:IqData 'ci-marker.txt'), 'synthetic CI data')
+              $unargs = @($argv)
+              if ($v.Mode -eq 'iex') {
+                $env:IQ_CODE_UNINSTALL = '1'; $env:IQ_CODE_PURGE = [int]$v.Purge
+              } else {
+                $unargs += if ($v.Mode -eq 'cmd') { '--uninstall' } else { '-Uninstall' }
+                if ($v.Purge) { $unargs += if ($v.Mode -eq 'cmd') { '--purge' } else { '-Purge' } }
+              }
+              $beforeUninstall = @{ Path=$before.Path; Bytes=(Snapshot $before.Path); HomeBytes=(Snapshot $script:HomeSettings) }
+              $text = Run "$($v.Name)-uninstall" $v.Exe $unargs
+              if ($v.Mode -eq 'iex') { Check "$($v.Name)-uninstall-continuation" ($text -match 'IQ_CI_CONTINUED') }
+              Check-List "$($v.Name)-uninstalled" $false
+              Check-Settings "$($v.Name)-uninstall" $beforeUninstall
+              $dataOK = if ($v.Purge) { -not (Test-Path -LiteralPath $script:IqData) }
+                        else { Test-Path -LiteralPath (Join-Path $script:IqData 'ci-marker.txt') }
+              Check "$($v.Name)-purge-policy" $dataOK
+            }
+            $env:IQ_CODE_UNINSTALL = '0'; $env:IQ_CODE_PURGE = '0'
+            if (Test-Path -LiteralPath $script:IqData) { Remove-Item -LiteralPath $script:IqData -Recurse -Force }
+          }
+          if ($script:Failed) { exit 1 }
+      - name: Git absent fails closed with documented message
+        id: no_git
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        run: |
+          . (Join-Path $env:RUNNER_TEMP 'iq-ci.ps1')
+          $before = New-Case no-git
+          $pathBefore = $env:PATH
+          try {
+            $env:PATH = (($pathBefore -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'git.exe')) -and -not (Test-Path (Join-Path $_ 'git.cmd')) }) -join ';'
+            Check git-absent ($null -eq (Get-Command git -CommandType Application -ErrorAction SilentlyContinue))
+            $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $text = Run no-git-install $exe @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\install.ps1') 1
+            Check no-git-message ($text -match 'Git for Windows is required\. Install it:')
+            Check-List no-git $false
+            Check-Settings no-git $before
+            Check no-git-no-data (-not (Test-Path -LiteralPath $script:IqData))
+          } finally { $env:PATH = $pathBefore }
+          if ($script:Failed) { exit 1 }
+      - name: Save step outcomes and remove credential config
+        if: always()
+        run: |
+          $env:IQ_EVIDENCE = Join-Path $env:RUNNER_TEMP 'iq-ci-evidence'
+          New-Item -ItemType Directory -Force $env:IQ_EVIDENCE | Out-Null
+          @'
+          ${{ toJSON(steps) }}
+          '@ | Set-Content -Encoding utf8 (Join-Path $env:IQ_EVIDENCE 'step-outcomes.json')
+          'GitHub marketplace and installers clone IQ-Routing/IQ-Code at the DEFAULT branch. install.cmd downloads install.ps1 from iq-routing.com; the other forms run the checkout copy. No login, key entry or model sessions. Settings checks: keys other than the CLI-written enabledPlugins/extraKnownMarketplaces stay as seeded, and the home settings file is byte-identical. no-git-install expects exit 1; assertions use 0=pass, 1=fail.' | Set-Content (Join-Path $env:IQ_EVIDENCE 'scope.txt')
+          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'iq-ci-gitconfig') -Force -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}\iq-ci-evidence
+          retention-days: 7
+  unix:
+    name: Install on ${{ matrix.os }}
+    strategy: {fail-fast: false, matrix: {os: [ubuntu-latest, macos-latest]}}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions: {contents: read}
+    env:
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+      DISABLE_AUTOUPDATER: '1'
+      CLAUDE_CODE_PLUGIN_PREFER_HTTPS: '1'
+      GIT_TERMINAL_PROMPT: '0'
+      CI_GIT_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Local lifecycle, GitHub installers without a TTY, and uninstall flags
+        id: unix
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, signal, subprocess, sys
+          from pathlib import Path
+          tmp = Path(os.environ['RUNNER_TEMP']); evidence = tmp / 'iq-ci-evidence'; evidence.mkdir(exist_ok=True)
+          config = tmp / 'iq-ci-gitconfig'; os.environ['GIT_CONFIG_GLOBAL'] = str(config); failed = []
+          SEED = b'{\n  "permissions": {"allow": []}\n}\n'
+          CLI_KEYS = ('enabledPlugins', 'extraKnownMarketplaces')
+          def record(name, code):
+              with (evidence / 'exit-codes.tsv').open('a') as f: f.write(f'{name}\t{code}\n')
+              print(f'{name} exit={code}', flush=True)
+              if code: failed.append(name)
+          def check(name, ok): record(name, 0 if ok else 1)
+          def run(name, args, timeout=120):
+              p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8', errors='replace', start_new_session=True)
+              try: output = p.communicate('', timeout=timeout)[0]; code = p.returncode
+              except subprocess.TimeoutExpired:
+                  os.killpg(p.pid, signal.SIGKILL); output = p.communicate()[0]; code = 124
+              output = output.replace(os.environ['CI_GIT_TOKEN'], '[redacted]') if os.environ['CI_GIT_TOKEN'] else output
+              output = re.sub(r'https://x-access-token:[^@\s]+@github\.com/', 'https://github.com/', output)
+              (evidence / f'{name}.txt').write_text(output[-16384:], encoding='utf-8'); print(output[-3000:], flush=True); record(name, code); return output
+          def new_case(name):
+              home = tmp / f'iq-ci-{name}'; settings = (home / 'config/settings.json', home / '.claude/settings.json')
+              for path in settings: path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(SEED)
+              os.environ.update(HOME=str(home), CLAUDE_CONFIG_DIR=str(home / 'config')); return settings
+          def settings_ok(paths):
+              # The CLI itself records enabledPlugins and extraKnownMarketplaces; every other key must stay as seeded.
+              try: data = json.loads(paths[0].read_text(encoding='utf-8'))
+              except (OSError, ValueError): return False
+              return isinstance(data, dict) and {k: v for k, v in data.items() if k not in CLI_KEYS} == {'permissions': {'allow': []}}
+          def home_ok(paths):
+              try: return paths[1].read_bytes() == SEED
+              except OSError: return False
+          def listing(name, installed):
+              output = run(name + '-list', ['claude', 'plugin', 'list'])
+              ok = bool(re.search(r'(?s)iq-code@iq-routing.*?Version:\s*1\.0\.0\b.*?Status:[^\r\n]*enabled', output)) if installed else 'iq-code@iq-routing' not in output
+              check(name + '-state', ok)
+          try:
+              new_case('bootstrap'); run('npm', ['npm', 'i', '-g', '@anthropic-ai/claude-code@2.1.293'], 180)
+              check('version-pin', bool(re.match(r'^2\.1\.293\s', run('version', ['claude', '--version']))))
+              new_case('local'); workspace = os.environ['GITHUB_WORKSPACE']
+              run('local-add', ['claude', 'plugin', 'marketplace', 'add', workspace])
+              run('local-install', ['claude', 'plugin', 'install', 'iq-code@iq-routing', '--scope', 'user']); listing('local-installed', True)
+              run('local-strict', ['claude', 'plugin', 'validate', '--strict', workspace])
+              run('local-uninstall', ['claude', 'plugin', 'uninstall', 'iq-code@iq-routing', '--scope', 'user']); listing('local-uninstalled', False)
+              run('git-auth', ['git', 'config', '--global', 'url.https://x-access-token:' + os.environ['CI_GIT_TOKEN'] + '@github.com/.insteadOf', 'https://github.com/'])
+              (evidence / 'scope.txt').write_text('GitHub forms install IQ-Routing/IQ-Code at the DEFAULT branch. No login, model sessions, IQ-host downloads or key entry. Settings checks: keys other than the CLI-written enabledPlugins/extraKnownMarketplaces stay as seeded, and ~/.claude/settings.json is byte-identical.\n', encoding='utf-8')
+              run('no-controlling-tty', ['sh', '-c', 'test ! -t 0 && ! (exec 3<>/dev/tty) 2>/dev/null'])
+              for form in ('file', 'pipe'):
+                  for purge in (False, True):
+                      name = form + ('-purge' if purge else '-keep'); paths = new_case(name)
+                      command = 'sh ./install.sh' if form == 'file' else 'cat ./install.sh | sh'
+                      output = run(name + '-install', ['bash', '-o', 'pipefail', '-c', command])
+                      check(name + '-key-skip', 'Add your IQ key with /plugin configure iq-code@iq-routing, then /reload-plugins.' in output and 'IQ key (optional;' not in output)
+                      check(name + '-install-settings', settings_ok(paths)); check(name + '-install-home-settings', home_ok(paths))
+                      listing(name + '-installed', True)
+                      data = Path(os.environ['HOME']) / '.claude/iq'; data.mkdir(parents=True, exist_ok=True)
+                      marker = data / 'ci-marker.txt'; marker.write_text('synthetic CI data')
+                      command = ('sh ./install.sh' if form == 'file' else 'cat ./install.sh | sh -s --') + ' --uninstall' + (' --purge' if purge else '')
+                      run(name + '-uninstall', ['bash', '-o', 'pipefail', '-c', command]); listing(name + '-uninstalled', False)
+                      check(name + '-uninstall-settings', settings_ok(paths)); check(name + '-uninstall-home-settings', home_ok(paths))
+                      check(name + '-purge-policy', not data.exists() if purge else marker.is_file())
+              (evidence / 'coverage.json').write_text(json.dumps({'failed': failed}, indent=2), encoding='utf-8')
+          finally: config.unlink(missing_ok=True)
+          sys.exit(bool(failed))
+          PY
+      - name: Save step outcomes and remove credential config
+        if: always()
+        env:
+          STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/iq-ci-evidence"
+          printf '%s\n' "$STEP_OUTCOMES" > "$RUNNER_TEMP/iq-ci-evidence/step-outcomes.json"
+          rm -f "$RUNNER_TEMP/iq-ci-gitconfig"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unix-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/iq-ci-evidence
+          retention-days: 7
