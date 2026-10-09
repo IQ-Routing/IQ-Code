@@ -1,0 +1,23 @@
+# IQ Light for Ghostty. Copy this file to ~/.config/ghostty/themes/iq-light, then set: theme = iq-light
+background = #f1f3f4
+foreground = #202124
+cursor-color = #4b8ec8
+cursor-text = #f1f3f4
+selection-background = #d2e3fc
+selection-foreground = #202124
+palette = 0=#202124
+palette = 1=#b3261e
+palette = 2=#1e7b34
+palette = 3=#765600
+palette = 4=#1b5ea6
+palette = 5=#6a3fa0
+palette = 6=#00677a
+palette = 7=#5f6368
+palette = 8=#686d72
+palette = 9=#c5221f
+palette = 10=#1a7b36
+palette = 11=#9a5200
+palette = 12=#2a6aa8
+palette = 13=#7a2db8
+palette = 14=#0b7c8c
+palette = 15=#3c4043

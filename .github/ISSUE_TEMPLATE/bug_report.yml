@@ -1,0 +1,71 @@
+name: Bug report
+description: Something in IQ Code is broken, or does not do what the docs say.
+title: "[Bug]: "
+labels: ["bug", "Triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not paste prompts, API keys, tokens or file paths anywhere in this form.
+
+        The first five boxes can be filled in by the `/iq feedback` link. They hold only your IQ Code version, your OS, your Claude Code version, the routing status and the last error code.
+  - type: input
+    id: iq_version
+    attributes:
+      label: IQ Code version
+      placeholder: "for example 1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "for example macOS 15.1, Linux or Windows"
+    validations:
+      required: true
+  - type: input
+    id: claude_code_version
+    attributes:
+      label: Claude Code version
+      placeholder: "for example 2.1.280"
+    validations:
+      required: true
+  - type: input
+    id: routing
+    attributes:
+      label: Routing status
+      description: "As /iq feedback shows it: on, off, or the reason routing is not running."
+    validations:
+      required: true
+  - type: input
+    id: last_error
+    attributes:
+      label: Last error code
+      description: "As /iq feedback shows it. Write none if there was no error."
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: Describe the problem in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The steps, not your prompts. If a step needs a prompt, describe it in general terms.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I have removed prompts, API keys, tokens and file paths from this report.
+          required: true

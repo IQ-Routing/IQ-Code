@@ -1,0 +1,23 @@
+# IQ Dark for Ghostty. Copy this file to ~/.config/ghostty/themes/iq-dark, then set: theme = iq-dark
+background = #1f2023
+foreground = #e8eaed
+cursor-color = #4b8ec8
+cursor-text = #1f2023
+selection-background = #33475b
+selection-foreground = #e8eaed
+palette = 0=#3c4043
+palette = 1=#f28b82
+palette = 2=#81c995
+palette = 3=#fdd663
+palette = 4=#8ab4f8
+palette = 5=#c58af9
+palette = 6=#78d9ec
+palette = 7=#bdc1c6
+palette = 8=#8b9198
+palette = 9=#f6aea9
+palette = 10=#a8dab5
+palette = 11=#fde293
+palette = 12=#aecbfa
+palette = 13=#d7aefb
+palette = 14=#a1e9f4
+palette = 15=#f1f3f4

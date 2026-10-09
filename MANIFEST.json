@@ -1,0 +1,248 @@
+{
+  "version": 1,
+  "pluginId": "iq-code@iq-routing",
+  "productVersion": "1.0.0",
+  "forecastSource": "server",
+  "files": [
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "bytes": 355,
+      "sha256": "bdfe0aae5f69e26b56ef1d468d1345c0747ae02035d4ca2ae9af3935d8bddb2a"
+    },
+    {
+      "path": ".claude-plugin/plugin.json",
+      "bytes": 963,
+      "sha256": "d2b9fdb596f9c12c44a99ea2b542f65e75097ec740a33daa5605d2418f439275"
+    },
+    {
+      "path": ".gitattributes",
+      "bytes": 56,
+      "sha256": "9c2aa9f2b0fb08f6866d13c20b9a6b183368792779f0ed402d12df34c74bdecc"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
+      "bytes": 2093,
+      "sha256": "e2e261ad543e3b7e6a52d2c2be83d7e070c934d3086113ba85567feb7505cf36"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/config.yml",
+      "bytes": 373,
+      "sha256": "14c267dff674567fb39fe88d96daee3e9f4468d1f071b31fda40c6b19a6b034e"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/feature_request.yml",
+      "bytes": 1947,
+      "sha256": "8b3e838c5e2bbc837020696a9817e35b8fa2c4ecabaac150911e4513a29ed74a"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/routing_question.yml",
+      "bytes": 2035,
+      "sha256": "0fcba4dc17ed07ee5697a995a5738487e1c876e12f2934143d4e975b1021ecba"
+    },
+    {
+      "path": "LICENSE",
+      "bytes": 5861,
+      "sha256": "6a064ff0aa40f1bf30f1e9d7ec828a315c700c763c0202eadfd21199a8e087d8"
+    },
+    {
+      "path": "README.md",
+      "bytes": 14911,
+      "sha256": "9ce78e09cc48ad1c82327272b13c40787b0163427df46addc4a17bbb10244ae9"
+    },
+    {
+      "path": "data/logo_frames.json",
+      "bytes": 294469,
+      "sha256": "ce122d880f81a9ce27439472060aac4e56ac867cbd2419b762ad4ecfb11e610e"
+    },
+    {
+      "path": "data/rate_card_2026-10-07.json",
+      "bytes": 9089,
+      "sha256": "01d53c1ca6321acb8b51ba7300f8171c750c0ffc2ee24001d3b9a84c9eb300dd"
+    },
+    {
+      "path": "extras/terminal/IQ-Dark.itermcolors",
+      "bytes": 6989,
+      "sha256": "0f201b1c6e7a465febada5417c1db6b53d5ce36fa5a2fa2403e07ec47e10a68d"
+    },
+    {
+      "path": "extras/terminal/IQ-Dark.terminal",
+      "bytes": 9245,
+      "sha256": "718348e23b7c8b43fe18c20b363e8a775e3a3185352ba3553f32090cdbd0d424"
+    },
+    {
+      "path": "extras/terminal/IQ-Light.itermcolors",
+      "bytes": 6977,
+      "sha256": "d2f4cb4e640389fd0952633bd41d95d791b2233efb19618f1dd3666a50cca132"
+    },
+    {
+      "path": "extras/terminal/IQ-Light.terminal",
+      "bytes": 9218,
+      "sha256": "36132d3b646f2dbed691c4e231c4745b23e2267b25f3195b778bcb561fef9187"
+    },
+    {
+      "path": "extras/terminal/README.md",
+      "bytes": 1641,
+      "sha256": "c97ff9d4551cd3088fa99e6785953f44342ac9bb7090a63579715182c4707a1a"
+    },
+    {
+      "path": "extras/terminal/ghostty/iq-dark",
+      "bytes": 576,
+      "sha256": "67163c35759fca0fd85bc4e886092efcf3ede05ac0d9546d2efd12e76f32a1c8"
+    },
+    {
+      "path": "extras/terminal/ghostty/iq-light",
+      "bytes": 579,
+      "sha256": "824d729c9dbb72bdd723f54e6ccbb2edf2d85faacbcdd7a9049963907ae88e96"
+    },
+    {
+      "path": "hooks/hooks.json",
+      "bytes": 35,
+      "sha256": "b6e8720c937b1a4ee1ee389fa5d9b5a22df25298241f701bb484d28f431f5153"
+    },
+    {
+      "path": "hooks/lib/feedback.js",
+      "bytes": 1596,
+      "sha256": "4ce96f11753aebf3c6a31411b4d010c0b446031076f1b3e3895bbfdba346158b"
+    },
+    {
+      "path": "hooks/lib/format.js",
+      "bytes": 5807,
+      "sha256": "2468035197f0fe43780608b5ccdb8ac7c6d7035f3d1f3d4ba3717ac00bd9cde6"
+    },
+    {
+      "path": "hooks/lib/iq_client.js",
+      "bytes": 13131,
+      "sha256": "de2a6bbc4fc6c708d0fad8ce2cda212570452ab5fb86ed540578a5f729f7167e"
+    },
+    {
+      "path": "hooks/lib/logo.js",
+      "bytes": 2504,
+      "sha256": "98fd1a0e0e46e229596f7d983ba5a17dcb7e4117bcfe4f4a8149dcee8bf5b460"
+    },
+    {
+      "path": "hooks/lib/meterview.js",
+      "bytes": 1055,
+      "sha256": "c9d3f0f067406ca0c35bfb8835cd989512b3bff2bfd5ff68bb4f3bb7342c4503"
+    },
+    {
+      "path": "hooks/lib/models.js",
+      "bytes": 4642,
+      "sha256": "49dbd6023f449fa8f91acb968b89a608135d5b275ea2b0cf7aa278736717f563"
+    },
+    {
+      "path": "hooks/lib/pins.js",
+      "bytes": 431,
+      "sha256": "62b7a91ba85e213f0e8ee132152b9424d486b0d59d5bffe3d85354390144c7b1"
+    },
+    {
+      "path": "hooks/lib/pricing.js",
+      "bytes": 4818,
+      "sha256": "e0e7e104b6f28ccd2be928ea1e1ef0aeaba1cf5b8df0b316ce0e7fa0e0305687"
+    },
+    {
+      "path": "hooks/lib/router.js",
+      "bytes": 19100,
+      "sha256": "09fe43b8276f179efe40c6b5453f694109fa3a0867378b0178eeeed848ceb485"
+    },
+    {
+      "path": "hooks/lib/runtime_mode.js",
+      "bytes": 33,
+      "sha256": "4f959e8e15761e64afe033e3d2fef642060c5d68e7df01b6b03b5e076e970dc5"
+    },
+    {
+      "path": "hooks/lib/server_forecast.js",
+      "bytes": 8810,
+      "sha256": "ae1938ea5324cf6da209e124edf3d7ce3f15f4661610e9ca7c622008fe4772e8"
+    },
+    {
+      "path": "hooks/lib/session_defaults.js",
+      "bytes": 1214,
+      "sha256": "e35d2d3e0fbb4bf20409bb9bb519efe1ab63aad7288b9520a9501f968b58ebb6"
+    },
+    {
+      "path": "hooks/lib/skin.js",
+      "bytes": 19304,
+      "sha256": "017f0624548cd464537f4bb89ae6371adf42aac9e95cf9d994538725d3ebf1c3"
+    },
+    {
+      "path": "hooks/lib/state.js",
+      "bytes": 9831,
+      "sha256": "eaad9928cec5e5ca56d98b5a88ad4037946bf161bf3981ddc79163803df4d377"
+    },
+    {
+      "path": "hooks/lib/subagents.js",
+      "bytes": 5162,
+      "sha256": "c106dc800d336e2f0d5423ea8762ce5ddc25f86c267b5ea5da4a24239664d803"
+    },
+    {
+      "path": "hooks/lib/tracker.js",
+      "bytes": 10427,
+      "sha256": "4e337f0fa91c0e3e1713756765147acd7f084b887062fc95adf4e924f9fc57fc"
+    },
+    {
+      "path": "hooks/lib/traffic.js",
+      "bytes": 1950,
+      "sha256": "be8631316118a774f4dd78e0cd31d52b42a9bab213cca10a7e6a95f5b65e656e"
+    },
+    {
+      "path": "hooks/lib/ui.js",
+      "bytes": 18544,
+      "sha256": "c7bda8ae1af5950ddd6055b00f514cc92abae0b42430659df135020971e567ca"
+    },
+    {
+      "path": "hooks/lib/util.js",
+      "bytes": 1810,
+      "sha256": "ff9c83482af254f4fed4433c7e05399cdbbebce797083967c841f38bdeb07257"
+    },
+    {
+      "path": "hooks/lib/view_model.js",
+      "bytes": 8700,
+      "sha256": "aea7e9c910d99211797d8a07ef470ecacdc98f20f4f122cf52d5f692699d66e4"
+    },
+    {
+      "path": "hooks/register.js",
+      "bytes": 42780,
+      "sha256": "d727d201d9322c51d07b4d8aa9bdc1f95026a9ea3f8417fd1cac362a4448bb61"
+    },
+    {
+      "path": "hooks/route_handlers.js",
+      "bytes": 11133,
+      "sha256": "79472bde9102e57c19d4b93b892edc02ef9a7e728cbdb318353b9254d3340358"
+    },
+    {
+      "path": "hooks/thin_subagent_handlers.js",
+      "bytes": 7925,
+      "sha256": "65a38522399a16ddacdbdb1a77755fb639e6455f4c28c89963af5a8d0ddf7c1f"
+    },
+    {
+      "path": "hooks/ui_handlers.js",
+      "bytes": 26177,
+      "sha256": "a800973938da316147a64701e26886fa5b510212755d3971c8fc3fd197d8cd54"
+    },
+    {
+      "path": "install.cmd",
+      "bytes": 1620,
+      "sha256": "23fb0429d87a82d7989baa99c4968e625f68e9d042c5065665f15a5dcdae5843"
+    },
+    {
+      "path": "install.ps1",
+      "bytes": 10332,
+      "sha256": "f9feb64cc652e1bdbeaab87115bd0a284e9634d0d1c38b180ed4e33a1131d3d0"
+    },
+    {
+      "path": "install.sh",
+      "bytes": 7167,
+      "sha256": "9dc28fb96e3b234ee777a3da97452164dcec5d48737ac5aad96b0e0f44307062"
+    },
+    {
+      "path": "themes/iq-dark.json",
+      "bytes": 2159,
+      "sha256": "7284120a65e547ebc48cc9f50d355422cb71808093b3c3c51405c94bc5bdb653"
+    },
+    {
+      "path": "themes/iq-light.json",
+      "bytes": 2161,
+      "sha256": "74749dc3471102c14795d1e16b0612742dc260d51f42c3877ef527ca7bfb98b6"
+    }
+  ]
+}

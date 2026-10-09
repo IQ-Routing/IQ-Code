@@ -1,0 +1,15 @@
+{
+  "name": "iq-routing",
+  "description": "IQ Code plugins from IQ Routing for Claude Code.",
+  "owner": {
+    "name": "IQ Routing",
+    "url": "https://iq-routing.com"
+  },
+  "plugins": [
+    {
+      "name": "iq-code",
+      "source": "./",
+      "description": "Session cost, cache countdown, plan pace and opt-in routing for Claude Code."
+    }
+  ]
+}

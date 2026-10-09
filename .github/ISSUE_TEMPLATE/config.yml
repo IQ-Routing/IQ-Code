@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Account, billing or sign-in
+    url: mailto:support@iq-routing.com?subject=IQ%20Code%20account
+    about: Email us for account questions. Do not put account details in a public issue.
+  - name: Setup and commands
+    url: https://github.com/IQ-Routing/IQ-Code#readme
+    about: Install steps and what each command does.
