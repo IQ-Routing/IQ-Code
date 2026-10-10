@@ -169,13 +169,22 @@ jobs:
             @{Name='ps51-iex'; Exe=$ps51; Mode='iex'; Purge=$true},
             @{Name='ps7-file'; Exe=(Get-Command pwsh.exe).Source; Mode='file'; Purge=$true},
             @{Name='ps7-iex'; Exe=(Get-Command pwsh.exe).Source; Mode='iex'; Purge=$false},
-            @{Name='cmd'; Exe=$env:ComSpec; Mode='cmd'; Purge=$true}
+            @{Name='cmd'; Exe=$env:ComSpec; Mode='cmd'; Purge=$true},
+            @{Name='cmd-site'; Exe=$env:ComSpec; Mode='cmd-site'; Purge=$false}
           )
+          # cmd-site runs the install.cmd that iq-routing.com serves, the way a user downloads it.
+          $siteDir = Join-Path $env:RUNNER_TEMP 'iq-site-cmd'
+          New-Item -ItemType Directory -Force $siteDir | Out-Null
+          $siteCmd = Join-Path $siteDir 'install.cmd'
+          & curl.exe -fsSL --proto '=https' 'https://iq-routing.com/install.cmd' -o $siteCmd
+          Save-Code site-cmd-download $LASTEXITCODE
+          if (Test-Path -LiteralPath $siteCmd) { (Get-FileHash -Algorithm SHA256 -LiteralPath $siteCmd).Hash.ToLower() | Set-Content (Join-Path $env:IQ_EVIDENCE 'site-install-cmd.sha256') }
           foreach ($v in $variants) {
             Case $v.Name {
               $before = New-Case $v.Name
               $env:IQ_CODE_UNINSTALL = '0'; $env:IQ_CODE_PURGE = '0'
               if ($v.Mode -eq 'cmd') { $argv = @('/d', '/c', 'install.cmd') }
+              elseif ($v.Mode -eq 'cmd-site') { $argv = @('/d', '/c', $siteCmd) }
               elseif ($v.Mode -eq 'file') { $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\install.ps1') }
               else { $argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "`$ErrorActionPreference = 'Stop'; Get-Content -Raw .\install.ps1 | Invoke-Expression; Write-Output 'IQ_CI_CONTINUED'") }
               $text = Run "$($v.Name)-install" $v.Exe $argv
@@ -189,8 +198,8 @@ jobs:
               if ($v.Mode -eq 'iex') {
                 $env:IQ_CODE_UNINSTALL = '1'; $env:IQ_CODE_PURGE = [int]$v.Purge
               } else {
-                $unargs += if ($v.Mode -eq 'cmd') { '--uninstall' } else { '-Uninstall' }
-                if ($v.Purge) { $unargs += if ($v.Mode -eq 'cmd') { '--purge' } else { '-Purge' } }
+                $unargs += if ($v.Mode -like 'cmd*') { '--uninstall' } else { '-Uninstall' }
+                if ($v.Purge) { $unargs += if ($v.Mode -like 'cmd*') { '--purge' } else { '-Purge' } }
               }
               $beforeUninstall = @{ Path=$before.Path; Bytes=(Snapshot $before.Path); HomeBytes=(Snapshot $script:HomeSettings) }
               $text = Run "$($v.Name)-uninstall" $v.Exe $unargs
@@ -231,7 +240,7 @@ jobs:
           @'
           ${{ toJSON(steps) }}
           '@ | Set-Content -Encoding utf8 (Join-Path $env:IQ_EVIDENCE 'step-outcomes.json')
-          'GitHub marketplace and installers clone IQ-Routing/IQ-Code at the DEFAULT branch. install.cmd downloads install.ps1 from iq-routing.com; the other forms run the checkout copy. No login, key entry or model sessions. Settings checks: keys other than the CLI-written enabledPlugins/extraKnownMarketplaces stay as seeded, and the home settings file is byte-identical. no-git-install expects exit 1; assertions use 0=pass, 1=fail.' | Set-Content (Join-Path $env:IQ_EVIDENCE 'scope.txt')
+          'GitHub marketplace and installers clone IQ-Routing/IQ-Code at the DEFAULT branch. install.cmd downloads install.ps1 from iq-routing.com; cmd-site also downloads install.cmd itself from iq-routing.com; the other forms run the checkout copy. No login, key entry or model sessions. Settings checks: keys other than the CLI-written enabledPlugins/extraKnownMarketplaces stay as seeded, and the home settings file is byte-identical. no-git-install expects exit 1; assertions use 0=pass, 1=fail.' | Set-Content (Join-Path $env:IQ_EVIDENCE 'scope.txt')
           Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'iq-ci-gitconfig') -Force -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         if: always()

@@ -50,6 +50,8 @@ if errorlevel 1 (
   rmdir /s /q "%iq_temp%"
   exit /b 1
 )
+rem PowerShell 7 passes cmd its own PSModulePath, which Windows PowerShell 5.1 cannot load Microsoft.PowerShell.Security from; clear it so 5.1 builds its default.
+set "PSModulePath="
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%iq_temp%\install.ps1" %iq_args%
 set "iq_exit=%ERRORLEVEL%"
 rmdir /s /q "%iq_temp%"
