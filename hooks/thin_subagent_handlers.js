@@ -1,7 +1,7 @@
 
 import * as State from './lib/state.js'
 import { resolveBase, planSubagent, effortFor, aliasOf, gateSpawn, SUB_TEXT, readOnlyTools, readAliasHost } from './lib/subagents.js'
-import { buildRouteBody, subagentType, estimateRequest, classifyResponse, destinationFrom, deadlineFrom, DEFAULT_DEADLINE_MS } from './lib/iq_client.js'
+import { buildRouteBody, subagentType, estimateRequest, consumeRouteReset, classifyResponse, destinationFrom } from './lib/iq_client.js'
 import { readKey, trafficOff, homeFrom, pathIn } from './lib/traffic.js'
 import { statusOf, noteRoutingUsage, usageLine, settlePause, lineFor } from './lib/router.js'
 import { VERSION } from './lib/pins.js'
@@ -21,6 +21,9 @@ function iqAccess($, ctx) {
 
 const safe = (p) => Promise.resolve(p).catch(() => undefined)
 const truthy = (v) => typeof v === 'string' && v !== '' && !['0', 'false', 'off', 'no'].includes(v.toLowerCase())
+
+const subagentsOn = () => State.getSetting('subagentRouting') === true
+const startAgain = () => State.setSetting('subagentRouting', true)
 export function registerThinSubagents(on, ctx, enabled) {
   let agents = new Map()
   let failures = 0
@@ -28,17 +31,27 @@ export function registerThinSubagents(on, ctx, enabled) {
   let aliasNoticeShown = false
   on('session.start', { isInteractive: [true, false] }, async ($, e, next) => {
     agents = new Map(); failures = 0; interactive = e.isInteractive === true; aliasNoticeShown = false
+    if (enabled()) startAgain()
+    return next(e)
+  })
+
+  on('session.end', { reason: /./ }, async ($, e, next) => {
+    if (enabled() && (e.reason === 'clear' || e.reason === 'resume')) startAgain()
     return next(e)
   })
   on('command.run', { command: 'iq-route', args: /^\s*subagents\b/i }, async ($, e, next) => {
     if (!enabled()) return next(e)
     if (!e.origin || !['composer', 'bridge'].includes(e.origin.kind)) return {}
     if (!interactive && !(await safe($.session.surfaces()))?.length) return {}
-    const args = String(e.args || '').trim().toLowerCase().split(/\s+/)
-    return { text: 'Subagent tasks are rated while routing is on. Type /iq-route off to stop.' }
+    const word = String(e.args || '').trim().toLowerCase().split(/\s+/)[1]
+    if (word !== 'on' && word !== 'off') return { text: SUB_TEXT.usageSub }
+    State.setSetting('subagentRouting', word === 'on')
+    try { $.ui.invalidate('ui.render') } catch (_) {}
+    return { text: word === 'on' ? SUB_TEXT.pubOn : SUB_TEXT.pubOff }
   })
   on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
-    if (!enabled()) return next(e)
+    if (!enabled() || !subagentsOn()) return next(e)
+    const submitMs = await $.clock.now()
     const r = ctx.getR()
     const home = homeFrom(await safe($.env.get('USERPROFILE')), await safe($.env.get('HOME')))
     const killed = await trafficOff(iqAccess($, ctx))
@@ -51,7 +64,8 @@ export function registerThinSubagents(on, ctx, enabled) {
       vertex: () => $.env.get('CLAUDE_CODE_USE_VERTEX'), foundry: () => $.env.get('CLAUDE_CODE_USE_FOUNDRY'), baseUrl: () => $.env.get('ANTHROPIC_BASE_URL') })
     const resolve = async (model) => {
       if (host.notice && !aliasNoticeShown && [model, e.parentModel].some((m) => typeof m === 'string' && m.trim().toLowerCase().replace(/\[.*$/, '') === 'haiku')) {
-        aliasNoticeShown = true; await safe($.ui.log(host.notice))
+        aliasNoticeShown = true
+        try { void safe($.ui.log(host.notice)) } catch (_) {}
       }
       return resolveBase(model, e.parentModel, host)
     }
@@ -83,11 +97,14 @@ export function registerThinSubagents(on, ctx, enabled) {
           context_tokens: null, cached_prefix_tokens: 0, turn_kind: 'subagent', subagent_type: subagentType(e.subagentType),
           subagent_read_only: readOnly, subagent_brief: e.prompt })
         const req = estimateRequest({ base: destination, key, body: built.body, version: VERSION, dev })
-        if (req && r === ctx.getR() && r.armed && !(await trafficOff(iqAccess($, ctx)))) {
-          const deadline = Math.min(DEFAULT_DEADLINE_MS, deadlineFrom(await safe($.env.get('IQ_ROUTER_DEADLINE_MS'))))
+        const deadline = State.routeDeadline(ctx.getM().sessionId, await safe($.env.get('IQ_ROUTER_DEADLINE_MS')), submitMs)
+        const remaining = Math.max(0, submitMs + deadline - await $.clock.now())
+        if (remaining > 0 && req && r === ctx.getR() && r.armed && !(await trafficOff(iqAccess($, ctx)))) {
+          State.noteRouteCall(ctx.getM().sessionId, await $.clock.now())
           const res = await new Promise((resolve) => {
             let finished = false
-            const timer = $.clock.after(deadline, () => { if (!finished) { finished = true; resolve(null) } })
+            const timer = $.clock.after(remaining, () => { if (!finished) { finished = true; resolve(null) } })
+            consumeRouteReset(r, req)
             safe($.http.fetch(req.url, req.init)).then((result) => { if (!finished) { finished = true; timer.cancel(); resolve(result) } })
           })
           const classified = classifyResponse(res)
@@ -96,18 +113,21 @@ export function registerThinSubagents(on, ctx, enabled) {
           if (classified.kind === 'ok') {
             answer = classified.parsed.block; failures = 0
             const line = usageLine(r, nowMs)
-            if (line) await safe($.ui.log(line))
+            if (line) { try { void safe($.ui.log(line)) } catch (_) {} }
           } else if (['plan_required', 'allowance', 'free_quota', 'free_daily', 'auth_required'].includes(classified.kind)) {
             const rec = { named: { model: base, effort }, counted: false }
             settlePause(r, rec, classified.kind === 'plan_required' ? 'plan' : classified.kind === 'auth_required' ? 'auth' : classified.kind, nowMs)
-            await safe($.ui.log(lineFor(rec, nowMs, r)))
+            if (!r.failureNotices.has(rec.error)) {
+              r.failureNotices.add(rec.error)
+              try { void safe($.ui.log(lineFor(rec, nowMs, r))) } catch (_) {}
+            }
           } else if (classified.kind === 'rate_limited') r.backoffUntil = nowMs + 600000
           else failures += 1
         }
       }
     }
     const plan = planSubagent({ base: { model: base, effort }, answer })
-    
+
     if (r !== ctx.getR() || !r.armed || await trafficOff(iqAccess($, ctx))) return next(e)
     const changed = plan.action !== 'keep'
     const input = changed ? { ...e, model: aliasOf(plan.model) || plan.model } : e
@@ -124,7 +144,7 @@ export function registerThinSubagents(on, ctx, enabled) {
       accepted = null
       result = await next(e)
     }
-    if (result && result.agentId && accepted && accepted.fromIq === true) { 
+    if (result && result.agentId && accepted && accepted.fromIq === true) {
       agents.set(result.agentId, { plan: accepted, chosen: base })
       if (agents.size > 128) agents.delete(agents.keys().next().value)
     }

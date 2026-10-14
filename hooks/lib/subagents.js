@@ -31,8 +31,12 @@ export async function readAliasHost(access) {
 export const SUB_TEXT = {
   routed: (type, to) => 'iq-route: subagent' + (type ? ' ' + type : '') + ' on ' + to + ' (IQ decision)',
   usageSub: 'iq-route: use subagents on or subagents off.',
-  subOn: 'iq-route: subagent routing is on for this session only. IQ rates each subagent task: its task brief (best-effort secret scrubbing, up to 16,000 characters) is sent to IQ and counts as one IQ decision. A task IQ cannot rate keeps its model. It starts off in every session; /iq-route subagents off stops it.',
   subOff: 'iq-route: subagent routing is off.',
+
+  pubOn: 'iq-route: subagent routing is on until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. While routing is on, IQ rates each subagent task: its task brief (best-effort secret scrubbing, up to 16,000 characters) is sent to IQ and counts as one IQ decision. A task IQ cannot rate keeps its model. /iq-route subagents off stops it now.',
+  pubOff: 'iq-route: subagent routing is off until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. No subagent task brief is sent to IQ, and each subagent keeps the model Claude Code gives it. /iq-route subagents on turns it back on now.',
+  pubStatusOn: 'iq-route: subagent routing is on (subagent tasks are rated while routing is on). /iq-route subagents off stops it for this session.',
+  pubStatusOff: 'iq-route: subagent routing is off for this session. /iq-route subagents on turns it back on.',
   subMainOff: 'iq-route: subagent routing needs routing on. Type /iq-route on first.',
   subNoKey: 'Add your IQ key with /plugin configure iq-code@iq-routing, then /reload-plugins.',
   subKilled: 'iq-route: subagent routing is disabled. IQ_ROUTER_DISABLED is set, or ~/.claude/iq/router/OFF exists.',
@@ -81,16 +85,16 @@ export function effortFor(plan, engineEffort) {
 
 export function gateSpawn(g, spawn) {
   if (g.on !== true) return 'off'
-  if (g.interactive !== true) return 'headless' 
-  
-  
+  if (g.interactive !== true) return 'headless'
+
+
   let mainOn = g.mainOn === true
   if (!mainOn) return 'main_off'
   if (g.killed) return 'killed'
   if (!g.hasKey) return 'no_key'
   if (g.errorsOff || g.stopped) return 'paused_errors'
-  if (spawn.fork === true) return 'fork' 
-  if (spawn.workflow) return 'workflow' 
+  if (spawn.fork === true) return 'fork'
+  if (spawn.workflow) return 'workflow'
   if (spawn.isTeammate === true) return 'teammate'
   return null
 }

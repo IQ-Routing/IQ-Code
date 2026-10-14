@@ -9,8 +9,9 @@ import { FORCE_SERVER } from './runtime_mode.js'
 
 
 
-import { effortLabel } from './models.js'
+import { effortLabel, canonicalModel } from './models.js'
 import { cacheTtlMs, ttlIsKnown, onSubscription } from './router.js'
+import { resetAtMs, windowFinished } from './format.js'
 
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x)
 const isStr = (x) => typeof x === 'string' && x !== ''
@@ -18,7 +19,7 @@ const isStr = (x) => typeof x === 'string' && x !== ''
 export const FIVE_HOUR_MS = 5 * 3600 * 1000
 export const WEEK_MS = 7 * 24 * 3600 * 1000
 
-export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: false, forecastSource: FORCE_SERVER ? 'server' : 'local' }
+export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: FORCE_SERVER, forecastSource: FORCE_SERVER ? 'server' : 'local' }
 DEFAULT_SETTINGS.defaultTaskBudget = null
 export const ADVISOR_MODES = ['keep', 'drop', 'ask']
 export const BUDGET_UNITS = ['usd', 'plan_pct']
@@ -31,7 +32,7 @@ export function cleanSettings(s) {
     budgetUnit: BUDGET_UNITS.includes(o.budgetUnit) ? o.budgetUnit : DEFAULT_SETTINGS.budgetUnit,
     animation: o.animation === false ? false : true,
     defaultTaskBudget: isNum(o.defaultTaskBudget) && o.defaultTaskBudget > 0 && !(o.budgetUnit === 'plan_pct' && o.defaultTaskBudget > 100) ? o.defaultTaskBudget : null,
-    subagentRouting: o.subagentRouting === true,
+    subagentRouting: typeof o.subagentRouting === 'boolean' ? o.subagentRouting : DEFAULT_SETTINGS.subagentRouting,
     forecastSource: FORCE_SERVER || o.forecastSource === 'server' ? 'server' : 'local',
   }
 }
@@ -47,11 +48,12 @@ function modelOf(m) {
   return { model: m.model, effort: isStr(effortLabel(m.effort)) ? effortLabel(m.effort) : null }
 }
 
-function parseIso(s) {
-  if (!isStr(s)) return null
-  const t = Date.parse(s)
-  return Number.isNaN(t) ? null : t
-}
+const parseIso = resetAtMs
+
+
+
+
+
 
 
 
@@ -60,10 +62,25 @@ function parseIso(s) {
 
 export function cacheClock(cache, nowMs) {
   if (!cache || !isNum(nowMs) || !isNum(cache.ttlSeconds) || cache.ttlSeconds <= 0 || !isNum(cache.lastWriteAt)) return null
-  const expires = isNum(cache.expiresAt) ? cache.expiresAt : cache.lastWriteAt + cache.ttlSeconds * 1000
-  const leftMs = expires - nowMs
-  return { state: leftMs > 0 ? 'warm' : 'cold', leftMs: Math.max(leftMs, 0), ttlSeconds: cache.ttlSeconds, rebuildUsd: isNum(cache.coldRebuildUsd) ? cache.coldRebuildUsd : null }
+  if (cache.tokens === 0) return null
+  const ttlMs = cache.ttlSeconds * 1000
+  if (cache.stale === true) return { state: 'cold', leftMs: 0, ttlSeconds: cache.ttlSeconds, rebuildUsd: null, tokens: null, startTokens: null, addedTokens: null }
+  const expires = isNum(cache.expiresAt) ? cache.expiresAt : cache.lastWriteAt + ttlMs
+  const leftMs = Math.min(expires - nowMs, ttlMs)
+  const tokens = isNum(cache.tokens) && cache.tokens > 0 ? cache.tokens : null
+  const startTokens = isNum(cache.startTokens) && cache.startTokens > 0 ? cache.startTokens : null
+  return {
+    state: leftMs > 0 ? 'warm' : 'cold',
+    leftMs: Math.max(leftMs, 0),
+    ttlSeconds: cache.ttlSeconds,
+    rebuildUsd: isNum(cache.coldRebuildUsd) ? cache.coldRebuildUsd : null,
+    tokens,
+    startTokens,
+    addedTokens: tokens !== null && startTokens !== null ? Math.max(tokens - startTokens, 0) : null,
+  }
 }
+
+
 
 
 
@@ -71,9 +88,11 @@ export function cacheClock(cache, nowMs) {
 
 export function planEta(readings, nowMs, pct, resetsAtMs, windowMs) {
   if (!isNum(nowMs) || !isNum(pct) || pct < 0) return null
+  if (windowFinished(resetsAtMs, nowMs)) return null
   if (pct >= 100) return nowMs
-  let rate = null 
+  let rate = null
   let rs = Array.isArray(readings) ? readings.filter((r) => r && isNum(r.t) && isNum(r.pct)) : []
+  if (isNum(resetsAtMs) && isNum(windowMs) && resetsAtMs - windowMs <= nowMs) rs = rs.filter((r) => r.t >= resetsAtMs - windowMs)
   const strictPace = FORCE_SERVER || stateModule && stateModule.getSetting && stateModule.getSetting('forecastSource') === 'server'
   if (strictPace) {
     rs = rs.filter((r) => r.t <= nowMs && nowMs - r.t <= FIVE_HOUR_MS && (!isNum(resetsAtMs) || r.t >= resetsAtMs - FIVE_HOUR_MS))
@@ -96,6 +115,8 @@ export function planEta(readings, nowMs, pct, resetsAtMs, windowMs) {
 
 
 
+
+
 export function planSection(rateLimits, history, nowMs) {
   const lim = Array.isArray(rateLimits) ? rateLimits : []
   const five = lim.find((l) => l && l.kind === 'five_hour')
@@ -112,6 +133,27 @@ export function planSection(rateLimits, history, nowMs) {
   const f = one(five, 'five_hour', FIVE_HOUR_MS)
   const w = one(week, 'seven_day', WEEK_MS)
   return { fiveHourPct: f.pct, weeklyPct: w.pct, fiveHourResetsAt: f.resetsAt, weeklyResetsAt: w.resetsAt, fiveHourHitAt: f.hitAt, weeklyHitAt: w.hitAt, stretchPct: null }
+}
+
+
+export const PLAN_CAP = 60
+
+
+
+
+export function noteReadings(history, rateLimits, nowMs) {
+  if (!history || !Array.isArray(rateLimits)) return
+  for (const l of rateLimits) {
+    if (!l || (l.kind !== 'five_hour' && l.kind !== 'seven_day') || typeof l.percentUsed !== 'number') continue
+    if (windowFinished(parseIso(l.resetsAt), nowMs)) continue
+    const arr = history[l.kind]
+    if (!Array.isArray(arr)) continue
+    const last = arr[arr.length - 1]
+    if (!last || last.pct !== l.percentUsed || nowMs - last.t >= 60000) {
+      arr.push({ t: nowMs, pct: l.percentUsed })
+      while (arr.length > PLAN_CAP) arr.shift()
+    }
+  }
 }
 
 
@@ -146,20 +188,25 @@ function historyOf(R, routing) {
       estSavedUsd: null,
     })
   }
-  
+
   const proj = routing && Array.isArray(routing.recent) ? routing.recent : []
   if (proj.length === out.length) for (let i = 0; i < out.length; i++) out[i].estSavedUsd = isNum(proj[i].est_saved_usd) ? proj[i].est_saved_usd : null
   return out
 }
 
+
+const wholePrompt = (last) => (last.pass && isNum(last.pass.ctx) ? last.pass.ctx : last.ctx)
+
 function coldRebuild(R, pricer, ttlSeconds) {
-  if (!R || !R.last || !isNum(R.last.ctx) || R.last.ctx <= 0 || !isNum(ttlSeconds) || !pricer || typeof pricer.resolve !== 'function') return null
+  if (!R || !R.last || !isNum(wholePrompt(R.last)) || wholePrompt(R.last) <= 0 || !isNum(ttlSeconds) || !pricer || typeof pricer.resolve !== 'function') return null
   const hit = pricer.resolve(R.last.model)
   if (!hit) return null
-  const rate = pricer.ratesFor(hit.row, R.last.ctx)
-  const per = ttlSeconds >= 3600 ? rate.w1 : rate.w5 
-  return isNum(per) ? (R.last.ctx * per) / 1e6 : null
+  const ctx = wholePrompt(R.last)
+  const rate = pricer.ratesFor(hit.row, ctx)
+  const per = ttlSeconds >= 3600 ? rate.w1 : rate.w5
+  return isNum(per) ? (ctx * per) / 1e6 : null
 }
+
 
 
 
@@ -169,10 +216,34 @@ export function buildView(a) {
   const usage = a.usage || {}
   const nowMs = isNum(a.nowMs) ? a.nowMs : null
   const settings = cleanSettings(a.settings)
-  
+
+
+
+
   const ttl = a.ttl && typeof a.ttl === 'object' ? a.ttl : { force5m: false, envTtl: '', settingTtl: '', enable1h: false }
-  const ttlSeconds = ttlIsKnown(ttl, usage.rateLimits) ? cacheTtlMs({ ...ttl, onSubscription: onSubscription(usage.rateLimits) }) / 1000 : null
-  const lastWriteAt = R && R.last && isNum(R.last.endMs) ? R.last.endMs : null
+  const nextTtlSeconds = ttlIsKnown(ttl, usage.rateLimits) ? cacheTtlMs({ ...ttl, onSubscription: onSubscription(usage.rateLimits) }) / 1000 : null
+  const last = R && R.last ? R.last : null
+  const ttlSeconds = last && last.ttlMs !== undefined ? (isNum(last.ttlMs) && last.ttlMs > 0 ? last.ttlMs / 1000 : null) : nextTtlSeconds
+  const lastWriteAt = last && isNum(last.startMs) ? last.startMs : null
+
+
+  const prefix = last && last.pass && isNum(last.pass.prefix) ? last.pass.prefix : last ? last.cachedPrefix : null
+  const cached = isNum(prefix) && prefix >= 0 ? prefix : null
+
+
+
+
+
+
+  const before = last && isStr(last.sessionModel) ? canonicalModel(last.sessionModel) : ''
+  const after = isStr(a.sessionModel) ? canonicalModel(a.sessionModel) : ''
+  const wrote = last && isStr(last.model) ? canonicalModel(last.model) : ''
+  const named = R && R.named && isStr(R.named.model) ? canonicalModel(R.named.model) : before
+  const ranRouted = !!last && last.routed === true && wrote !== '' && named !== '' && wrote !== named
+  const holder = ranRouted ? wrote : before
+  const next = after !== '' ? after : before !== '' ? before : ranRouted ? named : ''
+  const switched = !(routing && routing.status === 'on') && holder !== '' && next !== '' && holder !== next
+  const stale = !!(R && (R.cacheRestart === true || switched)) && last !== null
   const meterUsd = a.meter && a.meter.session && isNum(a.meter.session.usd) ? a.meter.session.usd : 0
   const s = routing && routing.session && typeof routing.session === 'object' ? routing.session : null
   const view = {
@@ -191,7 +262,10 @@ export function buildView(a) {
       ttlSeconds,
       lastWriteAt,
       expiresAt: isNum(ttlSeconds) && isNum(lastWriteAt) ? lastWriteAt + ttlSeconds * 1000 : null,
-      coldRebuildUsd: coldRebuild(R, a.pricer, ttlSeconds),
+      coldRebuildUsd: coldRebuild(R, a.pricer, isNum(nextTtlSeconds) ? nextTtlSeconds : ttlSeconds),
+      tokens: cached,
+      startTokens: R && R.cacheStart && isNum(R.cacheStart.tokens) && R.cacheStart.tokens > 0 ? R.cacheStart.tokens : null,
+      stale,
     },
     plan: planSection(usage.rateLimits, a.history, nowMs),
     subagents: [],
@@ -205,7 +279,7 @@ export function buildView(a) {
     try {
       return mergeState(view, stateModule.getView(a.sessionId || null))
     } catch (_) {
-      return view 
+      return view
     }
   }
   return view

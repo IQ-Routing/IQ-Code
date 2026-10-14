@@ -11,6 +11,8 @@ export const SYSTEM_LINE = 'This is a Claude Code coding session.'
 
 
 export const DEFAULT_DEADLINE_MS = 4000
+export const COLD_DEADLINE_MS = 7000
+export const ROUTE_IDLE_MS = 10 * 60 * 1000
 export const MIN_DEADLINE_MS = 1000
 export const MAX_DEADLINE_MS = 8000
 export const ALLOWANCE_CODE = 'subscription_routing_allowance_exceeded'
@@ -23,18 +25,50 @@ export const ROUTING_KEY_TEXT = 'Routing is paused: IQ did not accept your key. 
 
 export const FREE_ROUTING = Object.freeze({ monthlyCode: 'free_quota_exhausted', dailyCode: 'free_global_daily_quota_exhausted', allowance: 100,
   monthlyText: ROUTING_REFUSED_TEXT, dailyText: ROUTING_REFUSED_TEXT })
-export const BACKOFF_MS = 10 * 60 * 1000 
-export const HISTORY_TOKENS = 8000 
+export const BACKOFF_MS = 10 * 60 * 1000
+export const HISTORY_TOKENS = 8000
 export const CHARS_PER_TOKEN = 4
 export const MAX_HISTORY_MESSAGES = 24
 
 
 
+const INJECTED_TAGS = [
+  'system-reminder', 'command-name', 'command-message', 'command-args',
+  'local-command-stdout', 'local-command-stderr', 'local-command-caveat',
+  'bash-input', 'bash-stdout', 'bash-stderr', 'user-prompt-submit-hook',
+  'ide_selection', 'ide_opened_file', 'new-context', 'unknown-block',
+  'launch-selected-element', 'preview-annotation-context', 'artifact-view-context',
+]
+
+function withoutInjectedBlocks(t) {
+  const tags = new RegExp('<(/?)(' + INJECTED_TAGS.join('|') + ')(?=[\\s/>])[^>]{0,256}>', 'gi')
+  const stack = []
+  let out = '', cursor = 0
+  for (const match of t.matchAll(tags)) {
+    if (stack.length === 0) out += t.slice(cursor, match.index)
+    const name = match[2].toLowerCase()
+    if (match[1]) {
+      const at = stack.lastIndexOf(name)
+      if (at >= 0) stack.length = at
+    } else if (!/\/\s*>$/.test(match[0])) stack.push(name)
+    cursor = match.index + match[0].length
+  }
+  return out + (stack.length === 0 ? t.slice(cursor) : '')
+}
+
 export function cleanText(t) {
   if (typeof t !== 'string') return ''
-  return t.replace(/<([A-Za-z][\w:.-]*)\b[^>]*>[\s\S]*?<\/\1\s*>/g, '')
-    .replace(/<[A-Za-z][\w:.-]*\b[^>]*>[\s\S]*$/g, '')
-    .replace(/<[^>]*>/g, '').trim()
+  const raw = withoutInjectedBlocks(t).trim()
+  const clean = raw.replace(/<\/?pasted_content(?=[\s/>])[^>]{0,256}>/gi, '').trim()
+  const chars = (text) => text.replace(/\s/g, '').length
+  const rawChars = chars(raw)
+
+  return rawChars > 0 && (clean === '' || chars(clean) < rawChars * 0.1) ? raw : clean
+}
+
+
+function nonemptyPrompt(t) {
+  return cleanText(t) || (typeof t === 'string' && /\S/.test(t) ? '[Claude Code context removed]' : '')
 }
 
 export function userOrigin(e) {
@@ -72,7 +106,7 @@ function cutPrompt(text, maxChars) {
 
 export function buildEstimateBody(rows, promptText, secrets) {
   const capChars = HISTORY_TOKENS * CHARS_PER_TOKEN
-  const prompt = cutPrompt(scrub(cleanText(promptText), secrets), Math.floor(capChars / 2))
+  const prompt = cutPrompt(scrub(nonemptyPrompt(promptText), secrets), Math.floor(capChars / 2))
   const history = historyFrom(rows, promptText, Math.max(capChars - prompt.length, 0), secrets)
   const messages = [{ role: 'system', content: SYSTEM_LINE }, ...history, { role: 'user', content: prompt }].map((m) => ({ role: m.role, content: scrub(m.content, secrets) }))
   let chars = 0
@@ -94,15 +128,16 @@ export function buildRouteBody(rows, promptText, secrets, facts) {
   if (routing.turn_kind === 'subagent') {
     routing.subagent_type = subagentType(facts.subagent_type)
     routing.subagent_read_only = facts.subagent_read_only === true
-    routing.subagent_brief = scrub(cleanText(facts.subagent_brief || ''), secrets).slice(0, 16000)
+    routing.subagent_rating_opt_in = true
+    routing.subagent_brief = scrub(nonemptyPrompt(facts.subagent_brief || ''), secrets).slice(0, 16000)
   }
   return { body: { ...built.body, contract_version: 2, routing }, sent: built.sent }
 }
 
 
-export function deadlineFrom(raw) {
+export function deadlineFrom(raw, fallback = DEFAULT_DEADLINE_MS) {
   const t = typeof raw === 'string' ? raw.trim() : ''
-  if (!/^-?\d+(\.\d+)?$/.test(t)) return DEFAULT_DEADLINE_MS
+  if (!/^-?\d+(\.\d+)?$/.test(t)) return fallback
   return Math.min(MAX_DEADLINE_MS, Math.max(MIN_DEADLINE_MS, Math.round(Number(t))))
 }
 
@@ -207,6 +242,22 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
   if (named && typeof named.model === 'string' && named.model !== '') headers['x-iq-cc-named-model'] = canonicalModel(named.model)
   if (named && EFFORTS.includes(named.effort)) headers['x-iq-cc-named-effort'] = named.effort
   return { url: b + path, init: { method: 'POST', headers, body: JSON.stringify(body) } }
+}
+
+
+
+
+export function consumeRouteReset(router, request) {
+  if (!router || !router.resetNextRoute) return
+  router.resetNextRoute = false
+  try {
+    const body = JSON.parse(request.init.body)
+    if (body && body.routing && typeof body.routing === 'object') {
+      body.routing.last_served = null
+      body.routing.seconds_since_last_call = null
+      request.init.body = JSON.stringify(body)
+    }
+  } catch {}
 }
 
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,80}$/

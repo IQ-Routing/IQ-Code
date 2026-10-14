@@ -1,14 +1,16 @@
 
 import { dayOf, isoOf } from './util.js'
-import { validateAnswer, capEffort, rankOf, sameModel, displayModel, effortLabel, sameChoice } from './models.js'
-import { DEFAULT_DEADLINE_MS, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
+import { validateAnswer, capEffort, rankOf, sameModel, displayModel, effortLabel, sameChoice, canonicalModel } from './models.js'
+import { DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
 import { VERSION } from './pins.js'
+import { mainPass } from './pricing.js'
+import { FORCE_SERVER } from './runtime_mode.js'
 
-export const RT_VERSION = VERSION 
-export const RT_DIR = '.claude/iq/router' 
-export const RECENT_MAX = 10 
-export const MAX_IQ_FAILS = 5 
-export const DEFAULT_PHASE_REQUESTS = 8 
+export const RT_VERSION = VERSION
+export const RT_DIR = '.claude/iq/router'
+export const RECENT_MAX = 10
+export const MAX_IQ_FAILS = 5
+export const DEFAULT_PHASE_REQUESTS = 8
 const TTL_5M = 5 * 60 * 1000
 const TTL_1H = 60 * 60 * 1000
 const r6 = (x) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 1e6) / 1e6 : null)
@@ -54,32 +56,37 @@ export function onSubscription(rateLimits) {
 
 export function newRouter() {
   return {
-    armed: false, 
-    plan: null, 
-    usage: null, 
-    pause: null, 
-    deadlineMs: DEFAULT_DEADLINE_MS, 
-    recent: [], 
-    killed: false, 
-    cardBad: false, 
+    armed: false,
+    plan: null,
+    usage: null,
+    pause: null,
+    deadlineMs: COLD_DEADLINE_MS,
+    resetNextRoute: false,
+    recent: [],
+    killed: false,
+    cardBad: false,
     hasKey: false,
-    errorsOff: false, 
-    stopped: false, 
-    errors: 0, 
-    iqFails: 0, 
-    backoffUntil: 0, 
+    errorsOff: false,
+    stopped: false,
+    errors: 0,
+    iqFails: 0,
+    backoffUntil: 0,
     backoffNoted: false,
     pauseNoted: false,
-    named: null, 
-    current: null, 
-    last: null, 
+    failureNotices: new Set(),
+    named: null,
+    current: null,
+    last: null,
+    cacheStart: null,
+    cacheRestart: false,
+    cacheStartRead: false,
     seq: 0,
     counters: { prompts: 0, routed: 0, kept: 0, noDecision: 0, byModel: {}, savedUsd: null },
     stats: { turns: 0, steps: 0, out: 0, fresh: 0, maxGapS: 0 },
     lastError: null,
     ttlMs: TTL_5M,
     compactions: 0,
-    ttlKnown: false, 
+    ttlKnown: false,
   }
 }
 
@@ -94,7 +101,7 @@ export function newRecord(R, { nowMs, sessionModel }) {
     source: 'none',
     reason: 'off',
     tier: null,
-    choice: { model, effort: R.named && R.named.effort !== undefined ? R.named.effort : null }, 
+    choice: { model, effort: R.named && R.named.effort !== undefined ? R.named.effort : null },
     chosen: { model, effort: R.named ? effortLabel(R.named.effort) : null },
     named: null,
     iqRequestId: null,
@@ -105,17 +112,17 @@ export function newRecord(R, { nowMs, sessionModel }) {
     block: null,
     sent: null,
     error: null,
-    counted: false, 
-    local: null, 
+    counted: false,
+    local: null,
     decided: false,
     turnId: null,
     steps: 0,
-    usage: {}, 
+    usage: {},
     usdActual: 0,
     usdNamed: 0,
     priced: true,
     routed: false,
-    touched: false, 
+    touched: false,
     done: false,
   }
   if (Array.isArray(R.recent)) {
@@ -146,7 +153,7 @@ export function statusOf(R, nowMs) {
   if (R.killed || R.cardBad) return 'killed'
   if (!R.hasKey) return 'no_key'
   if (R.errorsOff || R.stopped) return 'paused_errors'
-  if (R.pause && R.pause.kind === 'plan') return 'paused_plan'
+  if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) return 'paused_plan'
   if (!R.armed) return 'off'
   if (R.pause && ['plan', 'auth'].includes(R.pause.kind)) return 'paused_plan'
   if (R.pause && ['allowance', 'free_quota', 'free_daily'].includes(R.pause.kind) && R.pause.untilMs > nowMs) return 'paused_allowance'
@@ -175,7 +182,7 @@ export function decide(R, c) {
   d.block = 'used'
   d.reason = answer.reason
   let choice = { model: answer.model, effort: answer.effort }
-  
+
   if (answer.stay) {
     const current = R.last
     if (!current || rankOf(current.model) === null || rankOf(current.model) > rankOf(named.model)) return { ...d, phase: 'error', error: 'no_rating' }
@@ -238,10 +245,10 @@ export function settleNone(R, rec, phase, reason, error) {
 
 
 export function settlePause(R, rec, kind, nowMs) {
-  
+
   if (kind === 'plan' || kind === 'auth') R.pause = { kind, posted: true }
   else R.pause = { kind, posted: true, untilMs: kind === 'free_daily' ? nextUtcDayMs(nowMs) : nextUtcMonthMs(nowMs) }
-  R.pauseNoted = true 
+  R.pauseNoted = true
   settleNone(R, rec, 'paused', 'paused', kind === 'plan' ? 'plan_required' : kind === 'auth' ? 'key_rejected' : kind === 'free_quota' ? FREE_ROUTING.monthlyCode : kind === 'free_daily' ? FREE_ROUTING.dailyCode : 'allowance_exceeded')
 }
 
@@ -272,14 +279,100 @@ export function settleRefused(R, rec) {
 
 
 
-export function noteMainStep(R, { model, effort, startMs, endMs, usage, routed }) {
+
+
+
+
+
+export function noteCacheStart(R, { model, tokens, endMs }) {
+  if (!(typeof tokens === 'number' && Number.isFinite(tokens) && tokens > 0)) return false
+  const s = R.cacheStart
+  const was = typeof model === 'string' ? canonicalModel(model) : ''
+  const had = s && typeof s.model === 'string' ? canonicalModel(s.model) : ''
+  const another = was !== '' && had !== '' && was !== had
+  const restart = R.cacheRestart === true
+  R.cacheRestart = false
+  if (s && !restart && !another && tokens >= s.tokens) return false
+  R.cacheStart = { model: typeof model === 'string' ? model : '', tokens, atMs: typeof endMs === 'number' && Number.isFinite(endMs) ? endMs : 0 }
+  return true
+}
+
+
+export function noteCompaction(R) {
+  if (R && typeof R === 'object') R.cacheRestart = true
+}
+
+
+
+export const CACHE_START_FILE = 'cache_start.json'
+const CACHE_START_KEEP = 16
+const savedSessions = (text) => {
+  let o = null
+  try {
+    o = JSON.parse(text)
+  } catch (_) {
+    return []
+  }
+  const list = o && typeof o === 'object' && Array.isArray(o.sessions) ? o.sessions : []
+  return list.filter((x) => x && typeof x === 'object' && typeof x.sid === 'string' && x.sid !== '' && typeof x.model === 'string' && typeof x.tokens === 'number' && Number.isFinite(x.tokens) && x.tokens > 0 && typeof x.atMs === 'number' && Number.isFinite(x.atMs))
+}
+
+
+export function savedCacheStart(text, sessionId) {
+  if (typeof text !== 'string' || typeof sessionId !== 'string' || sessionId === '') return null
+  const hit = savedSessions(text).find((x) => x.sid === sessionId)
+  return hit ? { model: hit.model, tokens: hit.tokens, atMs: hit.atMs } : null
+}
+
+
+export function cacheStartText(oldText, sessionId, start) {
+  const keep = (typeof oldText === 'string' ? savedSessions(oldText) : []).filter((x) => x.sid !== sessionId)
+  keep.push({ sid: sessionId, model: typeof start.model === 'string' ? start.model.slice(0, 80) : '', tokens: start.tokens, atMs: start.atMs })
+  keep.sort((a, b) => a.atMs - b.atMs)
+  return JSON.stringify({ v: 1, sessions: keep.slice(-CACHE_START_KEEP) }, null, 1) + '\n'
+}
+
+
+
+
+
+
+
+
+
+export function writeTtlMs({ derivedMs, usage, prev, model }) {
+  const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
+  const wrote = !!usage && num(usage.cache_creation_input_tokens) > 0
+  const same = !!prev && typeof prev.model === 'string' && typeof model === 'string' && canonicalModel(prev.model) === canonicalModel(model)
+  if (!wrote && same && prev.ttlMs !== undefined) return typeof prev.ttlMs === 'number' && prev.ttlMs > 0 ? prev.ttlMs : null
+  if (wrote) {
+    const split = usage.cache_creation && typeof usage.cache_creation === 'object' ? usage.cache_creation : null
+    const w1 = split ? num(split.ephemeral_1h_input_tokens) : 0
+    const w5 = split ? num(split.ephemeral_5m_input_tokens) : 0
+    if (w1 > 0 && w5 === 0) return 3_600_000
+    if (w5 > 0 && w1 === 0) return 300_000
+  }
+  return typeof derivedMs === 'number' && derivedMs > 0 ? derivedMs : null
+}
+
+
+
+
+
+export function noteMainStep(R, { model, effort, startMs, endMs, usage, routed, sessionModel, ttlMs, advisorCalls }) {
   if (R.last && startMs > R.last.startMs) {
     const gap = (startMs - R.last.startMs) / 1000
     if (gap > R.stats.maxGapS) R.stats.maxGapS = gap
   }
   const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
-  const ctx = num(usage.input_tokens) + num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens)
-  R.last = { model, effort: effort === undefined ? null : effort, startMs, endMs, ctx, cachedPrefix: num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens), routed: routed === true }
+
+
+
+
+  const pass = mainPass(usage, model, advisorCalls)
+  noteCacheStart(R, { model, tokens: pass.prefix, endMs })
+  R.last = { model, effort: effort === undefined ? null : effort, startMs, endMs, ctx: pass.ctx, cachedPrefix: pass.prefix, pass, routed: routed === true, sessionModel: typeof sessionModel === 'string' && sessionModel !== '' ? sessionModel : null }
+  if (ttlMs !== undefined) R.last.ttlMs = typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : null
   R.stats.steps += 1
   R.stats.out += num(usage.output_tokens)
   R.stats.fresh += num(usage.input_tokens)
@@ -298,7 +391,7 @@ export function namedUsage(usage, prev, startMs, ttlMs, diverged) {
   const rd = num(usage.cache_read_input_tokens)
   const cw = num(usage.cache_creation_input_tokens)
   const ctx = num(usage.input_tokens) + rd + cw
-  if (ctx < prev.ctx) return usage 
+  if (ctx < prev.ctx) return usage
   const move = Math.max(0, Math.min(cw, prev.ctx - rd))
   if (move === 0) return usage
   const out = { ...usage, cache_read_input_tokens: rd + move, cache_creation_input_tokens: cw - move }
@@ -316,10 +409,12 @@ export function namedUsage(usage, prev, startMs, ttlMs, diverged) {
 
 
 
-export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, changed }) {
+
+export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, changed, advisorCalls }) {
   rec.steps += 1
   const m = usage.model || model
-  const actual = pricer.price(m, usage, { main: true })
+  const passes = Number.isInteger(advisorCalls) && advisorCalls > 0 ? advisorCalls + 1 : 1
+  const actual = pricer.price(m, usage, { main: true, passes })
   const row = rec.usage[m] || (rec.usage[m] = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, usd: 0 })
   row.calls += 1
   row.input += actual.tokens.input
@@ -329,7 +424,7 @@ export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, c
   row.usd += actual.usd
   const diverged = changed === true || (!!prev && prev.routed === true)
   if (diverged) rec.touched = true
-  const named = rec.named ? pricer.price(rec.named.model, namedUsage(usage, prev, startMs, ttlMs, diverged), { main: true }) : null
+  const named = rec.named ? pricer.price(rec.named.model, namedUsage(usage, prev, startMs, ttlMs, diverged), { main: true, passes }) : null
   if (!actual.priced || named === null || !named.priced) rec.priced = false
   else {
     rec.usdActual += actual.usd
@@ -364,7 +459,7 @@ export function routingState(R, nowMs) {
     v: 1,
     status,
     pause_until: status === 'paused_allowance' ? ymdUtc(R.pause.untilMs) : null,
-    pause_reply: status === 'paused_plan' && R.pause.posted === true, 
+    pause_reply: status === 'paused_plan' && R.pause.posted === true,
     named: R.named ? { model: R.named.model, effort: effortLabel(R.named.effort) } : null,
     current: cur
       ? {
@@ -390,7 +485,7 @@ export function routingState(R, nowMs) {
     },
     usage: R.usage && R.usage.month === new Date(nowMs).toISOString().slice(0, 7) ? { ...R.usage } : null,
     last_error: R.lastError,
-    
+
     recent: R.recent
       .filter((r) => r.phase !== 'deciding')
       .map((r) => ({
@@ -470,7 +565,7 @@ export function lineFor(rec, nowMs, R) {
 }
 
 export const TEXT = {
-  usage: 'iq-route: use on, off or status.',
+  usage: FORCE_SERVER ? 'iq-route: use on, off, status, reset, or subagents on|off.' : 'iq-route: use on, off, status or reset.',
   noKey: 'Add your IQ key with /plugin configure iq-code@iq-routing, then /reload-plugins.',
   killed: 'iq-route: disabled. IQ_ROUTER_DISABLED is set, or ~/.claude/iq/router/OFF exists.',
   noHome: 'iq-route: not turned on. There is no home folder to keep its decision log in.',

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pluginId": "iq-code@iq-routing",
-  "productVersion": "1.0.0",
+  "productVersion": "1.0.1",
   "forecastSource": "server",
   "files": [
     {
@@ -12,12 +12,12 @@
     {
       "path": ".claude-plugin/plugin.json",
       "bytes": 963,
-      "sha256": "d2b9fdb596f9c12c44a99ea2b542f65e75097ec740a33daa5605d2418f439275"
+      "sha256": "d6a66055519bf0a222470e1965cafe3baec09097e9c85ec8899ce87fe24df285"
     },
     {
       "path": ".gitattributes",
-      "bytes": 56,
-      "sha256": "9c2aa9f2b0fb08f6866d13c20b9a6b183368792779f0ed402d12df34c74bdecc"
+      "bytes": 217,
+      "sha256": "6e1fb4caff3b5b554ca6223bba16db8d4ea0a890a5e7d3d19979bb494ad8401c"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
@@ -46,8 +46,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 14911,
-      "sha256": "9ce78e09cc48ad1c82327272b13c40787b0163427df46addc4a17bbb10244ae9"
+      "bytes": 16280,
+      "sha256": "fa267fbb1012a3be2828c78ec3842b3d1c997dfc7df8b1fc70cb8eb3990ee797"
     },
     {
       "path": "data/logo_frames.json",
@@ -106,18 +106,18 @@
     },
     {
       "path": "hooks/lib/format.js",
-      "bytes": 5807,
-      "sha256": "2468035197f0fe43780608b5ccdb8ac7c6d7035f3d1f3d4ba3717ac00bd9cde6"
+      "bytes": 8447,
+      "sha256": "096efa96706375f7b473a40394abbe1c4fd1416443945b8d9204a7aa395ca446"
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 13131,
-      "sha256": "de2a6bbc4fc6c708d0fad8ce2cda212570452ab5fb86ed540578a5f729f7167e"
+      "bytes": 14970,
+      "sha256": "d0b76ed11022f48689fa5dfec7a97a92b8d0bbc66ff8a93fea2b15e169211042"
     },
     {
       "path": "hooks/lib/logo.js",
-      "bytes": 2504,
-      "sha256": "98fd1a0e0e46e229596f7d983ba5a17dcb7e4117bcfe4f4a8149dcee8bf5b460"
+      "bytes": 2501,
+      "sha256": "00a00acfc3bad7e35b3186dcdf6c80c92bef6735afd92f27a7708279f697ab9e"
     },
     {
       "path": "hooks/lib/meterview.js",
@@ -126,23 +126,23 @@
     },
     {
       "path": "hooks/lib/models.js",
-      "bytes": 4642,
-      "sha256": "49dbd6023f449fa8f91acb968b89a608135d5b275ea2b0cf7aa278736717f563"
+      "bytes": 4633,
+      "sha256": "4fe318a2b23c4413486a8acf6ae1654b63d0ab20739797b9ffec05ff32b7e625"
     },
     {
       "path": "hooks/lib/pins.js",
-      "bytes": 431,
-      "sha256": "62b7a91ba85e213f0e8ee132152b9424d486b0d59d5bffe3d85354390144c7b1"
+      "bytes": 426,
+      "sha256": "328e58111127be8dbf01af0a3a3e0e3b44502cd3a7738e1f76a57ec5dc0440ee"
     },
     {
       "path": "hooks/lib/pricing.js",
-      "bytes": 4818,
-      "sha256": "e0e7e104b6f28ccd2be928ea1e1ef0aeaba1cf5b8df0b316ce0e7fa0e0305687"
+      "bytes": 8494,
+      "sha256": "b52649b7b154c7b0c1d1417dcaacbd8202e2879d9594d29b70d626cf5060d549"
     },
     {
       "path": "hooks/lib/router.js",
-      "bytes": 19100,
-      "sha256": "09fe43b8276f179efe40c6b5453f694109fa3a0867378b0178eeeed848ceb485"
+      "bytes": 22746,
+      "sha256": "3b0d0b680b883dc1e28e15f36dacbdc224c00882e1641fb4049ca65a0bb8340f"
     },
     {
       "path": "hooks/lib/runtime_mode.js",
@@ -151,43 +151,43 @@
     },
     {
       "path": "hooks/lib/server_forecast.js",
-      "bytes": 8810,
-      "sha256": "ae1938ea5324cf6da209e124edf3d7ce3f15f4661610e9ca7c622008fe4772e8"
+      "bytes": 8752,
+      "sha256": "f2eafaf88fd1df7c7bb4b7653317f07bac513310a039e477fcfc830a507a8e34"
     },
     {
       "path": "hooks/lib/session_defaults.js",
-      "bytes": 1214,
-      "sha256": "e35d2d3e0fbb4bf20409bb9bb519efe1ab63aad7288b9520a9501f968b58ebb6"
+      "bytes": 1206,
+      "sha256": "dde77075e87364f939ca2fe70140b483ef77aaa425de56e27d0591ab353067e1"
     },
     {
       "path": "hooks/lib/skin.js",
-      "bytes": 19304,
-      "sha256": "017f0624548cd464537f4bb89ae6371adf42aac9e95cf9d994538725d3ebf1c3"
+      "bytes": 26468,
+      "sha256": "6eaca0828b95d5ca229ef695d362cccf48817b5e69e5909e905fd3e66394fbaf"
     },
     {
       "path": "hooks/lib/state.js",
-      "bytes": 9831,
-      "sha256": "eaad9928cec5e5ca56d98b5a88ad4037946bf161bf3981ddc79163803df4d377"
+      "bytes": 10542,
+      "sha256": "08b341377e9a1b004835ac308b9e87668e0454e2174bf5bbc9871a810c323f8a"
     },
     {
       "path": "hooks/lib/subagents.js",
-      "bytes": 5162,
-      "sha256": "c106dc800d336e2f0d5423ea8762ce5ddc25f86c267b5ea5da4a24239664d803"
+      "bytes": 5774,
+      "sha256": "a5560e79363a93402c205d5e6578e5db09d5edd5670e9c08292affbeecb810a9"
     },
     {
       "path": "hooks/lib/tracker.js",
-      "bytes": 10427,
-      "sha256": "4e337f0fa91c0e3e1713756765147acd7f084b887062fc95adf4e924f9fc57fc"
+      "bytes": 11360,
+      "sha256": "5f73b1698bdf86d6e5d8b162ecb62b508a6fe59d151332482cb55974b1d56367"
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 1950,
-      "sha256": "be8631316118a774f4dd78e0cd31d52b42a9bab213cca10a7e6a95f5b65e656e"
+      "bytes": 1938,
+      "sha256": "f7dedd0f276d0d1292015531b5ec12cf2b5583ad6bff7f0a6d2a806f87f55322"
     },
     {
       "path": "hooks/lib/ui.js",
-      "bytes": 18544,
-      "sha256": "c7bda8ae1af5950ddd6055b00f514cc92abae0b42430659df135020971e567ca"
+      "bytes": 21951,
+      "sha256": "693d50eb3fc40c29395eac0b2119a4735ae7958491dd85dee0cde58efb4a4c1b"
     },
     {
       "path": "hooks/lib/util.js",
@@ -196,33 +196,33 @@
     },
     {
       "path": "hooks/lib/view_model.js",
-      "bytes": 8700,
-      "sha256": "aea7e9c910d99211797d8a07ef470ecacdc98f20f4f122cf52d5f692699d66e4"
+      "bytes": 11608,
+      "sha256": "453a6c6bffe233db85439994c54f9ca3ac9d7d621c4497f0e273b2ef40d3a7d5"
     },
     {
       "path": "hooks/register.js",
-      "bytes": 42780,
-      "sha256": "d727d201d9322c51d07b4d8aa9bdc1f95026a9ea3f8417fd1cac362a4448bb61"
+      "bytes": 46347,
+      "sha256": "cb9542f3cac305a7f908b3047da91795f5ee585a0062f68199b4280489422b00"
     },
     {
       "path": "hooks/route_handlers.js",
-      "bytes": 11133,
-      "sha256": "79472bde9102e57c19d4b93b892edc02ef9a7e728cbdb318353b9254d3340358"
+      "bytes": 11598,
+      "sha256": "06c7a5743edc334e53d36ac4af29a824af85490ef930ecc17cce8f2da6029622"
     },
     {
       "path": "hooks/thin_subagent_handlers.js",
-      "bytes": 7925,
-      "sha256": "65a38522399a16ddacdbdb1a77755fb639e6455f4c28c89963af5a8d0ddf7c1f"
+      "bytes": 8865,
+      "sha256": "c67e62668c37cf5dbaf1058a5112ffea5e0c07d776da820d31f537e759fccc6c"
     },
     {
       "path": "hooks/ui_handlers.js",
-      "bytes": 26177,
-      "sha256": "a800973938da316147a64701e26886fa5b510212755d3971c8fc3fd197d8cd54"
+      "bytes": 26731,
+      "sha256": "4c3a6258236f74c229f0708decdfd5bf19810a53aa57cdff6d1f2f55780c958d"
     },
     {
       "path": "install.cmd",
-      "bytes": 1620,
-      "sha256": "23fb0429d87a82d7989baa99c4968e625f68e9d042c5065665f15a5dcdae5843"
+      "bytes": 1861,
+      "sha256": "db3baac7819bb6cd462768c0c5a47f0dede32842b3fd8ab5e3e8832e47a93850"
     },
     {
       "path": "install.ps1",

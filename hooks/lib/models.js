@@ -33,7 +33,7 @@ export function sameModel(a, b) {
 
 
 const GUESS_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5']
-const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh'] 
+const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh']
 const SOURCES_HIGH_FIRST = ['policy', 'flag', 'local', 'project', 'user']
 
 export function guessEffort({ model, env, sources }) {
@@ -105,8 +105,8 @@ export function capEffort(effort, named) {
   const level = effortRank(named) === null ? 'medium' : named
   const budget = Number.isSafeInteger(named) && named >= 0 ? Math.min(named, MAX_THINKING_BUDGET) : null
   if (Number.isSafeInteger(effort) && effort >= 0) {
-    
-    
+
+
     if (effortRank(named) !== null) return named
     return Math.min(effort, budget ?? UNKNOWN_THINKING_BUDGET, MAX_THINKING_BUDGET)
   }

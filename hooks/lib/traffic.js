@@ -30,8 +30,8 @@ export async function readKey(access) {
     const exists = await access.exists(pathIn(home, '.claude/iq/key'))
     if (exists === true) return validKey(await access.read(pathIn(home, '.claude/iq/key')))
     if (exists !== false) return null
-    
-    
+
+
     const user = await access.user()
     return validKey(user && user.env && user.env.IQ_ROUTER_KEY)
   } catch (_) { return null }
@@ -43,7 +43,7 @@ export async function trafficOff(access) {
     if (truthy(await access.disabled())) return true
     const home = await access.home()
     if (!home) return true
-    
+
     return (await access.exists(pathIn(home, '.claude/iq/router/OFF'))) !== false
   } catch (_) { return true }
 }

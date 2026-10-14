@@ -1,2 +1,4 @@
 # LF line endings on every platform.
 * text=auto eol=lf
+# install.cmd keeps CRLF line endings: cmd.exe can jump to the wrong label in an LF-only batch file, so it is stored and served byte for byte.
+install.cmd -text

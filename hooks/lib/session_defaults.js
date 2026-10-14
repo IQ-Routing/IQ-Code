@@ -24,8 +24,8 @@ export function newSettingsClient({ now, later, fetch, onResult }) {
       try { onResult(value) } catch (_) {}
     }
     timer = later(SETTINGS_TIMEOUT_MS, () => finish(null))
-    
-    
+
+
     Promise.resolve().then(() => ended ? null : fetch(req.url, req.init)).then(
       (res) => finish(parseSettingsResponse(res)), () => finish(null),
     ).finally(() => { inFlight = false })

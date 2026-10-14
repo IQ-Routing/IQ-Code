@@ -1,4 +1,5 @@
 import { FORCE_SERVER } from './runtime_mode.js'
+import { deadlineFrom, DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, ROUTE_IDLE_MS } from './iq_client.js'
 
 
 
@@ -13,10 +14,11 @@ import { FORCE_SERVER } from './runtime_mode.js'
 
 export const HISTORY_MAX = 50
 export const SETTING_KEYS = ['advisorMode', 'budgetUnit', 'animation', 'subagentRouting', 'forecastSource']
-export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: false, forecastSource: FORCE_SERVER ? 'server' : 'local' }
+export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: FORCE_SERVER, forecastSource: FORCE_SERVER ? 'server' : 'local' }
 export const DASHBOARD_SETTING_KEYS = ['advisorMode', 'budgetUnit', 'animation', 'defaultTaskBudget']
 SETTING_KEYS.push('defaultTaskBudget')
 DEFAULT_SETTINGS.defaultTaskBudget = null
+
 
 
 export const SESSION_ONLY_KEYS = ['subagentRouting']
@@ -38,15 +40,15 @@ function resolvedSettings() {
   if (!settingsSessionActive) return out
   for (const k of DASHBOARD_SETTING_KEYS) out[k] = dashboard ? dashboard[k] : DEFAULT_SETTINGS[k]
   Object.assign(out, sessionChoices)
-  
-  
+
+
   if (dashboard && Object.hasOwn(sessionChoices, 'budgetUnit') && sessionChoices.budgetUnit !== dashboard.budgetUnit && !Object.hasOwn(sessionChoices, 'defaultTaskBudget')) out.defaultTaskBudget = null
   if (out.budgetUnit === 'plan_pct' && out.defaultTaskBudget > 100) out.defaultTaskBudget = null
   return out
 }
 
 export function startSettingsSession() {
-  settingsSessionActive = false 
+  settingsSessionActive = false
   dashboard = null
   pendingDashboard = undefined
   sessionChoices = {}
@@ -78,13 +80,14 @@ export function dashboardSources() {
 
 function blank() {
   return {
+    lastRouteCallMs: null,
     forecast: null,
     served: null,
     routingOn: false,
     history: [],
     estSavedUsdTotal: null,
-    budget: { unit: null, limit: null, spentUsd: 0, spentPct: null, forecast: null, status: 'none', suggestion: null },
-    cache: { ttlSeconds: null, lastWriteAt: null, expiresAt: null, coldRebuildUsd: null },
+    budget: { unit: null, limit: null, spentUsd: 0, spentFloor: false, spentPct: null, forecast: null, status: 'none', suggestion: null },
+    cache: { ttlSeconds: null, lastWriteAt: null, expiresAt: null, coldRebuildUsd: null, tokens: null, startTokens: null },
     plan: { fiveHourPct: null, weeklyPct: null, fiveHourResetsAt: null, weeklyResetsAt: null, fiveHourHitAt: null, weeklyHitAt: null, stretchPct: null },
     subagents: [],
     advisor: { reserveUsd: null, usedUsd: 0, calls: 0 },
@@ -100,9 +103,20 @@ function slot(sid) {
   if (!s) {
     s = blank()
     store.sessions.set(k, s)
-    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value) 
+    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value)
   }
   return s
+}
+
+
+export function routeDeadline(sessionId, raw, nowMs) {
+  const last = slot(sessionId).lastRouteCallMs
+  const cold = last === null || nowMs < last || nowMs - last >= ROUTE_IDLE_MS
+  return deadlineFrom(raw, cold ? COLD_DEADLINE_MS : DEFAULT_DEADLINE_MS)
+}
+
+export function noteRouteCall(sessionId, nowMs) {
+  slot(sessionId).lastRouteCallMs = nowMs
 }
 
 function notify() {
@@ -110,7 +124,7 @@ function notify() {
     try {
       fn()
     } catch (_) {
-      
+
     }
   }
 }
@@ -182,7 +196,7 @@ export function setSetting(k, v) {
   if (store.settings[k] === v) {
     if (pairedChanged) persistNow()
     if (wasDashboard || pairedChanged) notify()
-    return false 
+    return false
   }
   store.settings[k] = v
   if (!SESSION_ONLY_KEYS.includes(k)) persistNow()
@@ -195,10 +209,10 @@ export function loadSettings(obj) {
   const o = obj && typeof obj === 'object' ? obj : {}
   const next = { ...DEFAULT_SETTINGS }
   for (const k of SETTING_KEYS) if (!SESSION_ONLY_KEYS.includes(k) && valid(k, o[k])) next[k] = o[k]
-  
-  
+
+
   next.defaultTaskBudget = null
-  next.subagentRouting = false 
+  next.subagentRouting = DEFAULT_SETTINGS.subagentRouting
   store.settings = next
   notify()
 }
@@ -230,7 +244,7 @@ function persistNow() {
     const r = store.persist(settingsText())
     if (r && typeof r.catch === 'function') r.catch(() => {})
   } catch (_) {
-    
+
   }
 }
 
@@ -281,11 +295,14 @@ export function pushHistory(sessionId, h) {
 }
 
 
-export function resetSession(sessionId) {
+
+
+export function resetSession(sessionId, keepSessionOnly = false) {
   const sid = key(sessionId)
   store.current = sid
-  for (const k of SESSION_ONLY_KEYS) store.settings[k] = DEFAULT_SETTINGS[k] 
-  store.sessions.set(sid, blank())
+  if (keepSessionOnly !== true) for (const k of SESSION_ONLY_KEYS) store.settings[k] = DEFAULT_SETTINGS[k]
+  const lastRouteCallMs = keepSessionOnly === true ? slot(sid).lastRouteCallMs : null
+  store.sessions.set(sid, { ...blank(), lastRouteCallMs })
   notify()
 }
 

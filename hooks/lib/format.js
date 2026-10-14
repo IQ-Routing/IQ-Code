@@ -6,7 +6,7 @@
 
 export const LABEL = 'API-equivalent'
 const SHORT_LABEL = 'API-eq.'
-const SEP = ' · ' 
+const SEP = ' · '
 const BARS = '▁▂▃▄▅▆▇█'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -46,9 +46,18 @@ export function tokens(n) {
   return String(Math.round(n))
 }
 
+
+export function tokenSize(n) {
+  if (!isNum(n) || n < 0) return '?'
+  const one = (x) => String(Number(x.toFixed(1)))
+  if (n < 1e3) return String(Math.round(n)) + ' tok'
+  if (n < 1e6 && Math.round(n / 1e3) < 1e3) return (n < 1e4 ? one(n / 1e3) : String(Math.round(n / 1e3))) + 'K tok'
+  return one(n / 1e6) + 'M tok'
+}
+
 export function percent(p) {
   if (!isNum(p)) return '?%'
-  return String(p) + '%' 
+  return String(Math.round(p)) + '%'
 }
 
 export function hours(h) {
@@ -86,6 +95,33 @@ export function resetText(iso, withDay) {
 }
 
 
+
+export function resetAtMs(resetsAt) {
+  if (typeof resetsAt !== 'string' || resetsAt === '') return null
+  const t = Date.parse(resetsAt)
+  return Number.isNaN(t) ? null : t
+}
+
+
+
+export function viewResetMs(v) {
+  return typeof v === 'number' ? (Number.isFinite(v) ? v : null) : resetAtMs(v)
+}
+
+
+
+
+
+export function windowFinished(resetMs, nowMs) {
+  return isNum(resetMs) && isNum(nowMs) && resetMs <= nowMs
+}
+
+
+export function resetLabel(label) {
+  return label + ' reset'
+}
+
+
 export function stamp(ms) {
   if (!isNum(ms)) return '?'
   const d = new Date(ms)
@@ -104,35 +140,77 @@ export function answerLine(a) { return usd(a.usd) + SEP + plural(a.calls, 'call'
 
 
 
-export function workingBand(b) { return ['this prompt ' + usd(b.spend) + ' so far (' + SHORT_LABEL + ')' + SEP + plural(b.k, 'call', 'calls')] }
+export function workingBand(b) { return ['this prompt ' + usd(b.spend) + floorMark(b) + ' so far (' + SHORT_LABEL + ')' + SEP + plural(b.k, 'call', 'calls')] }
 
 export function subagentShare(dollars, calls) {
   return isNum(calls) && calls > 0 ? ' (subagents ' + usd(dollars) + ', ' + plural(calls, 'call', 'calls') + ')' : ''
 }
 
-export function promptResult(p) { return p ? 'last prompt ' + usd(p.usd) + SEP + plural(p.calls, 'call', 'calls') + subagentShare(p.helper_usd, p.helper_calls) : null }
+
+
+export function promptParts(p) { return p ? { head: 'last prompt ' + usd(p.usd) + floorMark(p), calls: plural(p.calls, 'call', 'calls'), share: subagentShare(p.helper_usd, p.helper_calls), est: '' } : null }
+
+export function promptResult(p) { return p ? 'last prompt ' + usd(p.usd) + floorMark(p) + SEP + plural(p.calls, 'call', 'calls') + subagentShare(p.helper_usd, p.helper_calls) : null }
 
 
 
-export function idleBand(s) {
-  const parts = []
+export function floorMark(p) {
+  return p && ((isNum(p.unpriced) && p.unpriced > 0) || (isNum(p.advisorUnpriced) && p.advisorUnpriced > 0)) ? '+' : ''
+}
+
+
+
+
+export function totalIsFloor(s) {
+  return !!s && ((isNum(s.unpriced) && s.unpriced > 0) || (isNum(s.advisorUnpriced) && s.advisorUnpriced > 0) || s.resumed === true)
+}
+
+
+export function floorNotes(s) {
+  const out = []
+  if (s && isNum(s.advisorUnpriced) && s.advisorUnpriced > 0) out.push(plural(s.advisorUnpriced, 'advisor call', 'advisor calls') + (s.advisorUnpriced === 1 ? ' is' : ' are') + ' not in the total: Claude Code does not report what the advisor cost, so the total is at least what is shown.')
+  if (s && isNum(s.unpriced) && s.unpriced > 0) out.push(plural(s.unpriced, 'call', 'calls') + ' could not be priced (a model with no price on the card), so the total is at least what is shown.')
+  if (s && s.resumed === true) out.push('The total counts calls since IQ Code started in this session; what the session held before is not in it.')
+  return out
+}
+
+
+
+
+
+export function sessionParts(s) {
+  const out = { total: null, active: null, rate: null, limits: [] }
   if (s.calls > 0) {
-    parts.push('session ' + usd(s.usd) + ' (' + SHORT_LABEL + ')')
-    if (isNum(s.activeHours) && s.activeHours >= 0.02) parts.push(hours(s.activeHours) + ' active')
-    if (isNum(s.activeHours) && s.activeHours >= 0.05 && isNum(s.usd)) parts.push(usd(s.usd / s.activeHours) + '/h')
+    out.total = 'session ' + usd(s.usd) + (totalIsFloor(s) ? '+' : '') + ' (' + SHORT_LABEL + ')'
+    if (isNum(s.activeHours) && s.activeHours >= 0.02) out.active = hours(s.activeHours) + ' active'
+    if (isNum(s.activeHours) && s.activeHours >= 0.05 && isNum(s.usd)) out.rate = usd(s.usd / s.activeHours) + (totalIsFloor(s) ? '+' : '') + '/h'
   }
   const limits = Array.isArray(s.rateLimits) ? s.rateLimits : []
   const five = limits.find((l) => l && l.kind === 'five_hour')
   const week = limits.find((l) => l && l.kind === 'seven_day')
   const wide = isNum(s.columns) && s.columns >= 130
   if (five && isNum(five.percentUsed)) {
-    const r = wide ? resetText(five.resetsAt, false) : ''
-    parts.push('5-hour ' + percent(five.percentUsed) + (r ? ' (resets ' + r + ')' : ''))
+    if (windowFinished(resetAtMs(five.resetsAt), s.nowMs)) out.limits.push(resetLabel('5-hour'))
+    else {
+      const r = wide ? resetText(five.resetsAt, false) : ''
+      out.limits.push('5-hour ' + percent(five.percentUsed) + (r ? ' (resets ' + r + ')' : ''))
+    }
   }
   if (week && isNum(week.percentUsed)) {
-    const r = resetText(week.resetsAt, true)
-    parts.push('weekly ' + percent(week.percentUsed) + (r ? ' (resets ' + r + ')' : ''))
+    if (windowFinished(resetAtMs(week.resetsAt), s.nowMs)) out.limits.push(resetLabel('weekly'))
+    else {
+      const r = resetText(week.resetsAt, true)
+      out.limits.push('weekly ' + percent(week.percentUsed) + (r ? ' (resets ' + r + ')' : ''))
+    }
   }
+  return out
+}
+
+
+
+export function idleBand(s) {
+  const p = sessionParts(s)
+  const parts = [p.total, p.active, p.rate, ...p.limits].filter((t) => t !== null)
   const last = promptResult(s.lastPrompt)
   if (last) return [last, parts.join(SEP)].filter(Boolean)
   if (parts.length === 0) return []
@@ -178,7 +256,7 @@ function padL(s, n) {
 }
 
 
-export function paneModel(data, opts) { const t = data && data.totals || {}; return [{ style: 'title', text: 'Measured cost · API-equivalent dollars' }, { style: 'plain', text: usd(t.usd) + SEP + plural(t.calls, 'call', 'calls') }, { style: 'dim', text: 'Measured calls since IQ Code started in this session.' }] }
+export function paneModel(data, opts) { const t = data && data.totals || {}; return [{ style: 'title', text: 'Measured cost · API-equivalent dollars' }, { style: 'plain', text: usd(t.usd) + (t.unpriced_calls > 0 ? '+' : '') + SEP + plural(t.calls, 'call', 'calls') }, { style: 'dim', text: 'Measured calls since IQ Code started in this session.' }] }
 
 
 export function paneNote(text) {

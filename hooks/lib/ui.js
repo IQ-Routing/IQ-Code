@@ -8,16 +8,16 @@
 
 
 
-import { workingBand, idleBand, paneModel, paneNote, subagentShare, usd, count, plural, percent, resetText, stamp, LABEL } from './format.js'
+import { workingBand, idleBand, paneModel, paneNote, subagentShare, floorMark, usd, count, plural, percent, resetText, resetAtMs, windowFinished, stamp, LABEL } from './format.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 
-import { displayText, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT } from './iq_client.js'
+import { displayText, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, FREE_ROUTING } from './iq_client.js'
 
 const SEP = ' · '
 const SHORT = 'API-eq.'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const BLOCKS = '▁▂▃▄▅▆▇█'
-const DEFAULT_COLOR = 0x01000000 
+const DEFAULT_COLOR = 0x01000000
 
 export const STATUSES = ['off', 'on', 'paused_errors', 'paused_plan', 'paused_allowance', 'killed', 'no_key',
 ]
@@ -86,7 +86,7 @@ function dateText(s) {
 
 function qualifier(cur) {
   const bits = []
-  
+
   if (isStr(cur.tier) && !(cur.phase === 'applied' && cur.chosen && cur.chosen.effort === cur.tier)) bits.push(cur.tier)
   if (cur.reason === 'cache_warm_hold') bits.push('cache warm')
   return bits.length > 0 ? ' (' + bits.join(', ') + ')' : ''
@@ -111,24 +111,46 @@ export function planPauseLine(r) {
   return r.last_error === 'key_rejected' ? ROUTING_KEY_TEXT : ROUTING_REFUSED_TEXT
 }
 
+const PLAN_URL = 'iq-routing.com/billing'
 
-function statusLine(r) {
+
+
+
+function pauseLine(r) {
+  const date = dateText(r.pause_until)
   switch (r.status) {
     case 'paused_errors':
-      return { text: 'IQ routing paused after errors, your model is used', style: 'warn' }
-    case 'paused_plan':
-      return { text: planPauseLine(r), style: 'warn' }
-    case 'paused_allowance': {
-      const d = dateText(r.pause_until)
-      return { text: "IQ routing used this month's decisions, so your model is used" + (d ? ' until ' + d : ''), style: 'warn' }
+      return { forms: ['IQ routing paused after errors, your model is used', 'Routing paused after errors', 'Routing paused'], style: 'warn' }
+    case 'paused_plan': {
+      const whole = planPauseLine(r)
+      if (whole === ROUTING_KEY_TEXT) return { forms: [whole, 'IQ did not accept your key. Check it, then /iq-route on', 'Check your IQ key, then /iq-route on', '/iq-route on'], style: 'warn' }
+      return { forms: [whole, 'Routing needs the Personal plan ($6/month): ' + PLAN_URL, 'Routing needs the Personal plan: ' + PLAN_URL, 'Needs the Personal plan: ' + PLAN_URL, 'Personal plan: ' + PLAN_URL, PLAN_URL], style: 'warn' }
     }
+    case 'paused_allowance':
+
+      if (r.last_error === FREE_ROUTING.dailyCode) return { forms: ['Free routing is used up for today, so your model is used' + (date ? ' until ' + date : ''), 'Free routing is used up for today' + (date ? ', back ' + date : ''), 'Free routing used up' + (date ? ', back ' + date : ''), 'Free routing used up'], style: 'warn' }
+      return { forms: ["IQ routing used this month's decisions, so your model is used" + (date ? ' until ' + date : ''), 'Routing limit reached, your model is used' + (date ? ' until ' + date : ''), 'Routing limit reached' + (date ? ' until ' + date : ''), 'Routing limit reached'], style: 'warn' }
     case 'killed':
-      return { text: 'IQ routing is switched off by its kill switch', style: 'warn' }
+      return { forms: ['IQ routing is switched off by its kill switch', 'Routing is switched off'], style: 'warn' }
     case 'no_key':
-      return { text: 'IQ routing has no key, so your model is used', style: 'warn' }
+      return { forms: ['IQ routing has no key, so your model is used', 'IQ routing has no key'], style: 'warn' }
     default:
       return null
   }
+}
+
+
+function statusLine(r) {
+  const p = pauseLine(r)
+  return p === null ? null : { text: p.forms[0], style: p.style }
+}
+
+
+function statusRow(r, width) {
+  const p = pauseLine(r)
+  if (p === null) return []
+  const text = p.forms.find((t) => t.length <= width) || p.forms[p.forms.length - 1]
+  return fit([{ text, style: p.style }], width)
 }
 
 
@@ -149,7 +171,7 @@ function badgeOf(r) {
     case 'paused':
       return { text: 'IQ: paused, kept your model', style: 'route_wait' }
     default:
-      return null 
+      return null
   }
 }
 
@@ -184,28 +206,74 @@ export function fit(row, width) {
 export const dot = () => ({ text: SEP, style: 'dim' })
 
 
+export const rowWidth = (row) => row.reduce((n, s) => n + s.text.length, 0)
+
+
+export function joinGroups(groups) {
+  const row = []
+  groups.forEach((g, i) => {
+    if (i > 0) row.push(dot())
+    for (const s of g) row.push(s)
+  })
+  return row
+}
+
+
+
+export function fitChunks(groups, width) {
+  const have = groups.filter((g) => g && g.length > 0)
+  for (let n = have.length; n >= 1; n--) {
+    const row = joinGroups(have.slice(0, n))
+    if (rowWidth(row) <= width) return row
+  }
+  return have.length > 0 ? fit(have[0], width) : []
+}
+
+
+
+export function fitText(text, style, width) {
+  if (text.length <= width) return [{ text, style }]
+  return fitChunks(text.split(SEP).map((t) => [{ text: t, style }]), width)
+}
+
+
 
 function promptBand(p, columns) {
   const share = subagentShare(p.helper_usd, p.helper_calls)
   const cols = share && isNum(columns) ? Math.max(21, columns - share.length) : columns
-  const rows = workingBand({ spend: p.spend_usd, k: p.calls, rem: p.rem, forecastNote: p.forecast_note, columns: cols })
+  const rows = workingBand({ spend: p.spend_usd, k: p.calls, rem: p.rem, forecastNote: p.forecast_note, unpriced: p.unpriced, advisorUnpriced: p.advisorUnpriced, columns: cols })
   if (share && rows.length) rows[0] = rows[0].replace(SEP + plural(p.calls, 'call', 'calls'), SEP + plural(p.calls, 'call', 'calls') + share)
+
+  if (rows.length && isNum(columns) && columns > 20 && rows[0].split(SEP)[0].length > columns - 3) rows[0] = rows[0].replace(' so far', '')
   return rows
 }
 
 
-function summaryRow(r) {
-  const row = [{ text: 'IQ routing on', style: 'head' }]
+
+
+
+function summaryForms(r) {
+  const head = [{ text: 'IQ routing on', style: 'head' }]
   const s = r.session && typeof r.session === 'object' ? r.session : null
-  if (s && isNum(s.prompts) && s.prompts > 0) {
-    row.push(dot(), { text: (isNum(s.routed) ? count(s.routed) : '0') + ' of ' + plural(s.prompts, 'prompt', 'prompts') + ' routed', style: 'plain' })
-    if (isNum(s.est_saved_usd)) {
-      if (s.est_saved_usd < 0) row.push(dot(), { text: 'est. extra ' + usd(-s.est_saved_usd) + ' (' + SHORT + ')', style: 'warn' })
-      else row.push(dot(), { text: 'est. saved ' + usd(s.est_saved_usd) + ' (' + SHORT + ')', style: s.est_saved_usd > 0 ? 'route_down' : 'plain' })
-    }
+  const base = [head]
+  if (s && isNum(s.prompts) && s.prompts > 0) base.push([{ text: (isNum(s.routed) ? count(s.routed) : '0') + ' of ' + plural(s.prompts, 'prompt', 'prompts') + ' routed', style: 'plain' }])
+  const forms = [base]
+  if (s && isNum(s.prompts) && s.prompts > 0 && isNum(s.est_saved_usd) && Math.abs(s.est_saved_usd) >= 0.005) {
+    const loss = s.est_saved_usd < 0
+    const money = [{ text: (loss ? 'est. extra ' : 'est. saved ') + usd(Math.abs(s.est_saved_usd)) + ' (' + SHORT + ')', style: loss ? 'warn' : 'route_down' }]
+    forms.unshift([...base, money], [head, money])
   }
-  return row
+  return forms
 }
+
+
+function summaryRow(r, width) {
+  const forms = summaryForms(r)
+  const hit = forms.find((groups) => rowWidth(joinGroups(groups)) <= width)
+  return hit ? joinGroups(hit) : fitChunks(forms[forms.length - 1], width)
+}
+
+
 
 
 
@@ -221,37 +289,46 @@ export function bandModel(a) {
     idleBand({
       usd: m.session.usd,
       calls: m.session.calls,
+      unpriced: m.session.unpriced,
+      advisorUnpriced: m.session.advisorUnpriced,
+      resumed: m.session.resumed,
       activeHours: m.session.active_hours,
       lastPrompt: m.session.last_prompt,
       rateLimits: lim.map((l) => (l ? { kind: l.kind, percentUsed: l.percent_used, resetsAt: l.resets_at } : l)),
       columns: cols,
+      nowMs: a.nowMs,
     })
 
+  const width = widthOf(columns)
   if (!routingOn) {
-    
+
     if (working) return promptBand(m.prompt, columns).map((t, i) => [{ text: t, style: i === 0 ? 'plain' : 'dim' }])
     return idleRows(columns).map((t) => [{ text: t, style: 'dim' }])
   }
 
-  const width = widthOf(columns)
   if (working) {
     const badge = badgeOf(r)
     if (badge === null) {
-      
+
       return promptBand(m.prompt, columns).map((t, i) => [{ text: t, style: i === 0 ? 'plain' : 'dim' }])
     }
     const inner = promptBand(m.prompt, isNum(columns) && columns > 20 ? Math.max(21, columns - badge.text.length - SEP.length) : undefined)
-    const rows = [fit([{ text: badge.text, style: badge.style }, dot(), { text: inner[0], style: 'plain' }], width)]
-    if (inner.length > 1) rows.push(fit([{ text: inner[1], style: 'dim' }], width))
-    return rows
+    const one = [{ text: badge.text, style: badge.style }, dot(), { text: inner[0], style: 'plain' }]
+    if (rowWidth(one) <= width) return inner.length > 1 ? [one, fitText(inner[1], 'dim', width)] : [one]
+
+
+
+    const own = r.status !== 'on' ? statusRow(r, width) : fitText(badge.text.length > width ? badge.text.replace(/, kept your model$/, '') : badge.text, badge.style, width)
+    return [own, ...promptBand(m.prompt, columns).map((t, i) => fitText(t, i === 0 ? 'plain' : 'dim', width))]
   }
 
-  
-  const status = r.status === 'on' ? null : statusLine(r)
-  const first = status === null ? summaryRow(r) : [{ text: status.text, style: status.style }]
-  const rows = [fit(first, width)]
+
+
+  const rows = [r.status === 'on' ? summaryRow(r, width) : statusRow(r, width)]
   const meterRows = idleRows(columns)
-  if (meterRows.length > 0) rows.push(fit([{ text: meterRows.join(SEP), style: 'dim' }], width))
+  const folded = meterRows.join(SEP)
+  if (meterRows.length === 1 || (meterRows.length > 1 && folded.length <= width)) rows.push(fitText(folded, 'dim', width))
+  else for (const t of meterRows) rows.push(fitText(t, 'dim', width))
   return rows
 }
 
@@ -409,24 +486,31 @@ export function sparkRaster(values, columns, rows) {
   return { columns: n, rows, cells: base64(new Uint8Array(words.buffer)) }
 }
 
-function planTab(m, surface, columns) {
+function planTab(m, surface, columns, nowMs) {
   const L = []
   const add = (style, text) => L.push({ style, text })
   const blank = () => L.push({ style: 'plain', text: ' ' })
   add('title', 'Plan')
-  add('dim', 'Percents are exactly as Claude Code reports them. Dollars here are ' + LABEL + ' and are never turned into plan percent.')
+  add('dim', 'Percents are Claude Code\'s own, to the nearest whole number. Dollars here are ' + LABEL + ' and are never turned into plan percent.')
   const lim = m && Array.isArray(m.rate_limits) ? m.rate_limits : []
   const five = lim.find((l) => l && l.kind === 'five_hour')
   const week = lim.find((l) => l && l.kind === 'seven_day')
   blank()
   if ((five && isNum(five.percent_used)) || (week && isNum(week.percent_used))) {
+
     if (five && isNum(five.percent_used)) {
-      const r = resetText(five.resets_at, false)
-      add('plain', pad('5-hour', 8) + bar(five.percent_used) + '  ' + percent(five.percent_used) + (r ? ' (resets ' + r + ')' : ''))
+      if (windowFinished(resetAtMs(five.resets_at), nowMs)) add('plain', pad('5-hour', 8) + 'reset')
+      else {
+        const r = resetText(five.resets_at, false)
+        add('plain', pad('5-hour', 8) + bar(five.percent_used) + '  ' + percent(five.percent_used) + (r ? ' (resets ' + r + ')' : ''))
+      }
     }
     if (week && isNum(week.percent_used)) {
-      const r = resetText(week.resets_at, true)
-      add('plain', pad('weekly', 8) + bar(week.percent_used) + '  ' + percent(week.percent_used) + (r ? ' (resets ' + r + ')' : ''))
+      if (windowFinished(resetAtMs(week.resets_at), nowMs)) add('plain', pad('weekly', 8) + 'reset')
+      else {
+        const r = resetText(week.resets_at, true)
+        add('plain', pad('weekly', 8) + bar(week.percent_used) + '  ' + percent(week.percent_used) + (r ? ' (resets ' + r + ')' : ''))
+      }
     }
   } else add('dim', 'Claude Code has not reported plan limits for this session yet.')
 
@@ -458,7 +542,7 @@ export function paneTabs(a) {
     tabs: [
       { id: 'routing', title: 'Routing', lines: routingTab(r) },
       { id: 'cost', title: 'Cost', lines: costLines },
-      { id: 'plan', title: 'Plan', lines: planTab(m, a && a.surface, a && a.columns) },
+      { id: 'plan', title: 'Plan', lines: planTab(m, a && a.surface, a && a.columns, a && a.nowMs) },
     ],
   }
 }
@@ -470,7 +554,7 @@ export function sessionCostLines(m) {
   const L = [{ style: 'plain', text: ' ' }, { style: 'head', text: 'Prompts this session (newest first, API-equivalent)' }]
   const add = (style, text) => L.push({ style, text })
   for (const p of s.prompts.slice(0, 20)) {
-    let text = '#' + count(p.idx) + SEP + usd(p.usd) + SEP + plural(p.calls, 'call', 'calls') + subagentShare(p.helper_usd, p.helper_calls)
+    let text = '#' + count(p.idx) + SEP + usd(p.usd) + floorMark(p) + SEP + plural(p.calls, 'call', 'calls') + subagentShare(p.helper_usd, p.helper_calls)
     if (!p.completed) text += SEP + 'running'
     if (p.unpriced > 0) text += SEP + plural(p.unpriced, 'unpriced call', 'unpriced calls')
     add('plain', text)

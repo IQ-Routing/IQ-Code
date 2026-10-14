@@ -9,9 +9,8 @@
 
 
 import { parseFrames, frameAt, frameMs, svgFrameAt, svgFrameMs, TEXT_MARK } from './lib/logo.js'
-import { buildView, cleanSettings, setStateModule, servedOf, DEFAULT_SETTINGS } from './lib/view_model.js'
-import { cacheTtlMs, ttlIsKnown, onSubscription } from './lib/router.js'
-import { skinTabs, bandRows, spinnerStatus, tagOf, cardLine, turnLine, noticeModel, hintTail, WORDS } from './lib/skin.js'
+import { buildView, cacheClock, cleanSettings, setStateModule, servedOf, noteReadings, DEFAULT_SETTINGS } from './lib/view_model.js'
+import { skinTabs, bandRows, bandShown, spinnerStatus, tagOf, cardLine, turnLine, noticeModel, hintTail, WORDS } from './lib/skin.js'
 import * as STATE from './lib/state.js'
 import { safeErr, scrub, destinationFrom, displayText } from './lib/iq_client.js'
 import { VERSION } from './lib/pins.js'
@@ -40,14 +39,13 @@ function pathIn(base, ...parts) {
     String(part).replace(/^[\\/]+|[\\/]+$/g, '').replace(/[\\/]+/g, sep)).join(sep)
 }
 
-setStateModule(STATE) 
+setStateModule(STATE)
 
-const SETTINGS_PATH = '/.claude/iq/settings.json' 
-const UI_STATE_PATH = '/.claude/iq/ui_state.json' 
+const SETTINGS_PATH = '/.claude/iq/settings.json'
+const UI_STATE_PATH = '/.claude/iq/ui_state.json'
 const STAMP_CAP = 400
-const TICK_MS = 30000 
-const HOME_LOOPS = 3 
-const PLAN_CAP = 60
+const TICK_MS = 30000
+const HOME_LOOPS = 3
 
 const STYLE = {
   title: { bold: true },
@@ -62,28 +60,30 @@ const STYLE = {
   route_wait: { dimColor: true },
 }
 
-let H = null 
-let U = newUi() 
+let H = null
+let U = newUi()
 
 function newUi() {
   return {
-    frames: null, 
+    frames: null,
     settings: { ...DEFAULT_SETTINGS },
-    ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false }, 
-    onboarded: null, 
+    ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false },
+    onboarded: null,
     home: null,
-    plan: { five_hour: [], seven_day: [] }, 
-    stamps: new Map(), 
+    plan: { five_hour: [], seven_day: [] },
+    stamps: new Map(),
     lastTag: null,
-    timers: new Map(), 
-    svgFrames: new Map(), 
-    finished: new Set(), 
-    cardNodes: new Map(), 
+    timers: new Map(),
+    svgFrames: new Map(),
+    finished: new Set(),
+    cardNodes: new Map(),
     tickTimer: null,
-    loading: null, 
+    expiryTimer: null,
+    drawn: null,
+    loading: null,
     errors: 0,
     quiet: false,
-    feedback: null, 
+    feedback: null,
   }
 }
 
@@ -201,7 +201,7 @@ export function uiReset() {
     stopAll()
     U = newUi()
   } catch (_) {
-    
+
   }
 }
 
@@ -209,7 +209,7 @@ export function uiTurnDone() {
   try {
     stopSpinners()
   } catch (_) {
-    
+
   }
 }
 
@@ -217,7 +217,7 @@ export function uiEnd() {
   try {
     stopAll()
   } catch (_) {
-    
+
   }
 }
 
@@ -238,16 +238,17 @@ async function uiStart($) {
   U.home = await userHome($)
   const root = $.plugin.root
   const text = await safe($.fs.read(pathIn(root, 'data/logo_frames.json')))
-  U.frames = typeof text === 'string' ? parseFrames(text) : null 
+  U.frames = typeof text === 'string' ? parseFrames(text) : null
   U.ttl = await readTtl($)
   if (U.home) {
     const s = await readJson($, pathIn(U.home, SETTINGS_PATH))
-    U.settings = { ...cleanSettings(s), subagentRouting: false } 
+    U.settings = cleanSettings({ ...s, subagentRouting: undefined })
     const st = await readJson($, pathIn(U.home, UI_STATE_PATH), true)
-    U.onboarded = st === undefined ? false : st === null ? true : st.onboarded === true 
+    U.onboarded = st === undefined ? false : st === null ? true : st.onboarded === true
   }
-  
-  
+
+
+
   if (U.tickTimer === null) U.tickTimer = $.clock.every(TICK_MS, () => tick($))
 }
 
@@ -267,13 +268,47 @@ async function readTtl($) {
   }
 }
 
+
+
+
+
+
 async function tick($) {
   if (!H.interactive() || !H.ready() || H.working()) return
   const R = H.router()
-  if (!R || !R.last) return
-  const now = await $.clock.now()
-  const ttl = ttlIsKnown(U.ttl, H.usage().rateLimits) ? cacheTtlMs({ ...U.ttl, onSubscription: onSubscription(H.usage().rateLimits) }) : null
-  if (ttl !== null && now < R.last.endMs + ttl + 10000) $.ui.invalidate('ui.render')
+  const held = !!(R && R.last)
+  const usage = H.usage()
+  const readings = usage && usage.rateLimits
+  if (!held && !(Array.isArray(readings) && readings.length > 0)) return
+  const nowMs = await $.clock.now()
+  if (held) U.ttl = await readTtl($)
+  const view = buildView({
+    router: R,
+    routing: H.routing(),
+    meter: null,
+    usage,
+    pricer: H.pricer(),
+    nowMs,
+    settings: U.settings,
+    ttl: U.ttl,
+    history: U.plan,
+    working: false,
+    sent: null,
+    sessionId: H.sessionId(),
+    sessionModel: held ? await sessionModelOf($) : undefined,
+  })
+  if (bandShown(view, nowMs) !== U.drawn) $.ui.invalidate('ui.render')
+
+
+  const clock = cacheClock(view.cache, nowMs)
+  if (clock && clock.state === 'warm' && clock.leftMs <= TICK_MS) {
+    cancelTimer(U.expiryTimer)
+    try {
+      U.expiryTimer = $.clock.after(clock.leftMs + 250, () => $.ui.invalidate('ui.render'))
+    } catch (_) {
+      U.expiryTimer = null
+    }
+  }
 }
 
 
@@ -286,6 +321,15 @@ async function readJson($, path, absentOk) {
     return j && typeof j === 'object' && !Array.isArray(j) ? j : null
   } catch (_) {
     return null
+  }
+}
+
+
+async function sessionModelOf($) {
+  try {
+    return await $.session.model()
+  } catch (_) {
+    return undefined
   }
 }
 
@@ -303,7 +347,7 @@ function cancelTimer(t) {
     else if (t && typeof t.cancel === 'function') t.cancel()
     else if (t && typeof t.then === 'function') t.then(cancelTimer, () => {})
   } catch (_) {
-    
+
   }
 }
 
@@ -326,6 +370,8 @@ function stopAll() {
   for (const id of [...U.timers.keys()]) stopTimer(id)
   if (U.tickTimer !== null) cancelTimer(U.tickTimer)
   U.tickTimer = null
+  if (U.expiryTimer !== null) cancelTimer(U.expiryTimer)
+  U.expiryTimer = null
 }
 
 
@@ -333,7 +379,7 @@ function stopAll() {
 
 const UI_LOG = '/.claude/iq/ui/errors.log'
 const UI_LOG_CAP = 24 * 1024
-const UI_MAX_ERRORS = 5 
+const UI_MAX_ERRORS = 5
 
 async function noteError($, where, err) {
   U.errors += 1
@@ -355,7 +401,7 @@ async function noteError($, where, err) {
     text = scrub(text + line, [key, H && H.pluginKey ? H.pluginKey() : undefined]).slice(-UI_LOG_CAP)
     await $.fs.write(path, text)
   } catch (_) {
-    
+
   }
 }
 
@@ -365,7 +411,7 @@ function say($, text) {
   try {
     void safe($.ui.log(displayText(text)))
   } catch (_) {
-    
+
   }
 }
 
@@ -386,7 +432,7 @@ async function ensureInteractive($) {
 async function persistSetting($, key, value) {
   if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) return
   U.settings = cleanSettings({ ...U.settings, [key]: value })
-  STATE.setSetting(key, U.settings[key]) 
+  STATE.setSetting(key, U.settings[key])
   const text = STATE.takePendingSettings()
   if (text && U.home) await $.fs.write(pathIn(U.home, SETTINGS_PATH), text)
 }
@@ -400,9 +446,9 @@ async function markOnboarded($) {
 async function doControl($, d) {
   try {
     if (d.kind === 'set') await persistSetting($, d.key, d.value)
-    else if (d.kind === 'routing' && typeof H.setRouting === 'function') say($, await H.setRouting(d.value)) 
+    else if (d.kind === 'routing' && typeof H.setRouting === 'function') say($, await H.setRouting(d.value))
     else if (d.kind === 'onboarded') await markOnboarded($)
-    if (d.kind === 'set' && d.key === 'animation' && d.value === false) stopMarks() 
+    if (d.kind === 'set' && d.key === 'animation' && d.value === false) stopMarks()
   } catch (err) {
     await noteError($, 'ui.press', err)
   }
@@ -412,21 +458,13 @@ async function doControl($, d) {
 
 
 
+
+
 function notePlan(nowMs) {
-  const lim = H.usage().rateLimits
-  if (!Array.isArray(lim)) return
-  for (const l of lim) {
-    if (!l || (l.kind !== 'five_hour' && l.kind !== 'seven_day') || typeof l.percentUsed !== 'number') continue
-    const arr = U.plan[l.kind]
-    const last = arr[arr.length - 1]
-    if (!last || last.pct !== l.percentUsed || nowMs - last.t >= 60000) {
-      arr.push({ t: nowMs, pct: l.percentUsed })
-      while (arr.length > PLAN_CAP) arr.shift()
-    }
-  }
+  noteReadings(U.plan, H.usage().rateLimits, nowMs)
 }
 
-function currentView(nowMs, working) {
+function currentView(nowMs, working, sessionModel) {
   notePlan(nowMs)
   const view = buildView({
     router: H.router(),
@@ -441,6 +479,7 @@ function currentView(nowMs, working) {
     working,
     sent: H.sent(),
     sessionId: H.sessionId(),
+    sessionModel,
   })
   U.settings = cleanSettings(view.settings)
   if (U.settings.animation === false) stopMarks()
@@ -458,7 +497,9 @@ async function drawBand($, e, next) {
   const nowMs = await $.clock.now()
   const working = !!p.isWorking
   const meter = H.meter(working)
-  const rows = bandRows({ meter, routing: H.bandRouting(), view: currentView(nowMs, working), nowMs, columns })
+  const view = currentView(nowMs, working, working ? undefined : await sessionModelOf($))
+  U.drawn = working ? '' : bandShown(view, nowMs)
+  const rows = bandRows({ meter, routing: H.bandRouting(), view, nowMs, columns })
   if (rows === null || rows.length === 0) return next(e)
   const { Box, Text } = $.ui.resolve(e)
   const text = (s) => Text({ ...(STYLE[s.style] || {}), wrap: 'truncate-end', children: displayText(s.text) })
@@ -486,7 +527,7 @@ async function drawSpinner($, e, next) {
     const flag = e.surface === 'desktop' && Svg && U.frames
       ? Svg({ source: svgFrameAt(U.frames, animate ? U.svgFrames.get(id) ?? 0 : -1), alt: 'IQ Code is working', width: 28, height: 28, isInteractive: false })
       : Text({ bold: true, color: 'claude', children: TEXT_MARK })
-    
+
     return Box({ flexDirection: 'row', columnGap: 1, children: [Box({ key: 'iq-spin-flag', children: [flag] }), line] })
   }
   const engine = await next(e)
@@ -494,7 +535,7 @@ async function drawSpinner($, e, next) {
   const mark = f
     ? Raster({ key: 'iq-spin', columns: f.columns, rows: f.rows, cells: f.cells })
     : Text({ bold: true, color: 'claude', children: TEXT_MARK })
-  if (f && H.working()) startMarkTimer($, e.requestId, 'iq-spin', 'sm') 
+  if (f && H.working()) startMarkTimer($, e.requestId, 'iq-spin', 'sm')
   const body = Box({ flexDirection: 'column', children: [engine, Text({ dimColor: true, children: displayText(status) })] })
   return Box({ flexDirection: 'row', columnGap: 1, children: [mark, body] })
 }
@@ -508,7 +549,7 @@ function startMarkTimer($, requestId, key, size) {
   const timer = $.clock.every(frameMs(U.frames), async () => {
     i += 1
     if (i >= limit) {
-      
+
       stopTimer(id)
       U.finished.add(id)
       const rest = frameAt(U.frames, size, -1)
@@ -517,14 +558,14 @@ function startMarkTimer($, requestId, key, size) {
     }
     const f = frameAt(U.frames, size, i)
     const res = f ? await safe($.ui.blit({ requestId, key, cells: f.cells })) : { deny: 'no frame' }
-    if (!res || res.deny) stopTimer(id) 
+    if (!res || res.deny) stopTimer(id)
   })
   U.timers.set(id, timer)
 }
 
 
 function startSvgTimer($, requestId, key) {
-  const id = 'svg/' + requestId + '/' + key 
+  const id = 'svg/' + requestId + '/' + key
   const frames = U.frames && U.frames.svg.frames
   if (U.timers.has(id) || U.finished.has(id) || !Array.isArray(frames) || !frames.length || U.settings.animation === false) return
   let i = 0
@@ -565,8 +606,8 @@ function stampFor(requestId, kind, p, nowMs) {
 async function drawCard($, e, next, kind) {
   if (!H.interactive() || U.quiet) return next(e)
   await ensureLoaded($)
-  
-  
+
+
   const props = e.props && typeof e.props === 'object' ? e.props : null
   const cols = props && typeof props.bodyColumns === 'number' ? props.bodyColumns : e.viewport && typeof e.viewport.columns === 'number' ? e.viewport.columns : 0
   const sig = props !== null ? propsSig(props) : null
@@ -646,7 +687,7 @@ async function onIq($, e) {
   await ensureLoaded($)
   H.tab.set('home')
   stopTimer('iq/iq-home')
-  U.finished.delete('iq/iq-home') 
+  U.finished.delete('iq/iq-home')
   stopTimer('svg/iq/iq-home')
   U.finished.delete('svg/iq/iq-home')
   const opened = await $.ui.open({ id: 'iq', title: 'IQ', focus: true, closeOnEscape: true })
@@ -680,7 +721,7 @@ async function drawPane($, e, next) {
   const columns = e.props && typeof e.props.bodyColumns === 'number' ? e.props.bodyColumns : 80
   const surface = e.surface
   const nowMs = await $.clock.now()
-  const view = currentView(nowMs, false)
+  const view = currentView(nowMs, false, await sessionModelOf($))
   const model = skinTabs({
     meter: H.meter(false),
     routingState: H.routing(),

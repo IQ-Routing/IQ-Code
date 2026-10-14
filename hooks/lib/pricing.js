@@ -17,8 +17,99 @@
 
 
 
+
+
+
+
+
+
+
 const hasOwn = (obj, key) => obj !== null && obj !== undefined && Object.prototype.hasOwnProperty.call(obj, key)
 const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
+const isStr = (x) => typeof x === 'string' && x !== ''
+
+
+const idOf = (id) => {
+  if (typeof id !== 'string') return ''
+  let m = id.trim().toLowerCase()
+  const br = m.indexOf('[')
+  if (br >= 0) m = m.slice(0, br)
+  const slash = m.lastIndexOf('/')
+  if (slash >= 0) m = m.slice(slash + 1)
+  return m.replace(/-20\d{6}$/, '')
+}
+const sameId = (a, b) => idOf(a) !== '' && idOf(a) === idOf(b)
+
+
+
+
+function ownPasses(usage, model) {
+  const its = usage && Array.isArray(usage.iterations) ? usage.iterations : []
+  const fallback = its.find((e) => e && typeof e === 'object' && e.type === 'fallback_message' && isStr(e.model))
+  const ran = fallback ? fallback.model : isStr(usage && usage.model) ? usage.model : model
+  const own = []
+  const other = []
+  for (const e of its) {
+    if (!e || typeof e !== 'object' || !isStr(e.type)) continue
+    if (e.type === 'fallback_message') own.push(e)
+    else if (e.type === 'message' && (!isStr(e.model) || sameId(e.model, ran))) own.push(e)
+    else other.push(e)
+  }
+  return { ran, own, other }
+}
+
+
+export function extraPasses(usage, model) {
+  return ownPasses(usage, model).other.map((e) => ({ type: e.type, model: isStr(e.model) ? e.model : null, usage: e }))
+}
+
+
+
+
+export function lastPass(usage, model) {
+  const { own } = ownPasses(usage, model)
+  const e = own.length > 0 ? own[own.length - 1] : null
+  if (e === null) return null
+  const prefix = num(e.cache_read_input_tokens) + num(e.cache_creation_input_tokens)
+  return { ctx: num(e.input_tokens) + prefix, prefix }
+}
+
+
+
+
+
+
+
+export function mainPass(usage, model, advisorCalls) {
+  const listed = lastPass(usage, model)
+  if (listed !== null) return listed
+  const prefix = num(usage && usage.cache_read_input_tokens) + num(usage && usage.cache_creation_input_tokens)
+  const ctx = num(usage && usage.input_tokens) + prefix
+  const calls = Number.isInteger(advisorCalls) && advisorCalls > 0 ? advisorCalls : 0
+  return calls > 0 ? { ctx: Math.round(ctx / (calls + 1)), prefix: Math.round(prefix / (calls + 1)) } : { ctx, prefix }
+}
+
+
+
+
+export function advisorCallsIn(result) {
+  const uses = result && Array.isArray(result.serverToolUses) ? result.serverToolUses : []
+  let n = 0
+  for (const u of uses) {
+    if (u && typeof u === 'object' && typeof u.name === 'string' && u.name.trim().toLowerCase() === 'advisor' && u.endedAt !== undefined && u.endedAt !== null) n += 1
+  }
+  return n
+}
+
+
+
+
+
+
+export function booked(priced, advisorMade = 0) {
+  const made = Number.isInteger(advisorMade) && advisorMade > 0 ? advisorMade : 0
+  return { ...priced, usd: priced.usd + priced.extra.usd, own: priced.usd, partial: priced.extra.unpriced > 0, advisor: Math.max(0, made - priced.extra.advisor) }
+}
 
 
 export function modelClass(model) {
@@ -38,7 +129,7 @@ export function modelClass(model) {
     }
     return 'gpt-other'
   }
-  
+
   for (const k of families) if (m === k || m.startsWith(k + '-')) return 'claude-' + k
   return 'other'
 }
@@ -64,7 +155,7 @@ export function makePricer(card) {
   const keys = Object.keys(rows).filter((k) => rows[k] && rows[k].priced !== false)
   const resolved = new Map()
 
-  
+
   function resolve(model) {
     if (typeof model !== 'string' || model === '') return null
     if (resolved.has(model)) return resolved.get(model)
@@ -84,7 +175,7 @@ export function makePricer(card) {
     return found
   }
 
-  
+
   function ratesFor(row, contextTokens) {
     const rIn = row.input
     const rOut = row.output
@@ -106,27 +197,26 @@ export function makePricer(card) {
     return { input: rIn, output: rOut, read: rCr, w5: rW5, w1: rW1, isTier: false }
   }
 
-  
-  
-  
-  
-  function price(model, usage, opts) {
-    const isMain = !!(opts && opts.main)
+
+
+
+  function priceCounters(row, usage, isMain, passes = 1) {
     const inp = num(usage && usage.input_tokens)
     const out = num(usage && usage.output_tokens)
     const cr = num(usage && usage.cache_read_input_tokens)
     const cw = num(usage && usage.cache_creation_input_tokens)
     const split = usage && usage.cache_creation && typeof usage.cache_creation === 'object' ? usage.cache_creation : null
-    const cw5 = split ? num(split.ephemeral_5m_input_tokens) : 0
-    const cw1 = split ? num(split.ephemeral_1h_input_tokens) : 0
+    const named = split !== null && (Number.isFinite(split.ephemeral_5m_input_tokens) || Number.isFinite(split.ephemeral_1h_input_tokens))
+    const cw5 = named ? num(split.ephemeral_5m_input_tokens) : 0
+    const cw1 = named ? num(split.ephemeral_1h_input_tokens) : 0
     const unsplit = Math.max(cw - cw5 - cw1, 0)
-    const w5tokens = cw5 + (isMain ? 0 : unsplit)
-    const w1tokens = cw1 + (isMain ? unsplit : 0)
+
+    const w5tokens = cw5 + (named || !isMain ? unsplit : 0)
+    const w1tokens = cw1 + (!named && isMain ? unsplit : 0)
     const context = inp + cr + cw
-    const hit = resolve(model)
     const tokens = { input: inp, output: out, read: cr, write5: w5tokens, write1h: w1tokens }
-    if (hit === null) return { usd: 0, priced: false, key: null, parts: null, tokens, context }
-    const r = ratesFor(hit.row, context)
+    if (row === null) return { usd: 0, priced: false, parts: null, tokens, context }
+    const r = ratesFor(row, passes > 1 ? context / passes : context)
     const parts = {
       input: (inp * r.input) / 1e6,
       output: (out * r.output) / 1e6,
@@ -134,8 +224,34 @@ export function makePricer(card) {
       write5: (w5tokens * r.w5) / 1e6,
       write1h: (w1tokens * r.w1) / 1e6,
     }
-    const usd = parts.input + parts.read + parts.write5 + parts.write1h + parts.output
-    return { usd, priced: true, key: hit.key, parts, tokens, context }
+    return { usd: parts.input + parts.read + parts.write5 + parts.write1h + parts.output, priced: true, parts, tokens, context }
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+  function price(model, usage, opts) {
+    const isMain = !!(opts && opts.main)
+    const hit = resolve(model)
+    const given = opts && Number.isInteger(opts.passes) && opts.passes > 1 ? opts.passes : 1
+    const own = priceCounters(hit === null ? null : hit.row, usage, isMain, Math.max(given, ownPasses(usage, model).own.length))
+    const extra = { usd: 0, passes: 0, unpriced: 0, advisor: 0 }
+    for (const pass of extraPasses(usage, model)) {
+      const at = pass.model === null ? null : resolve(pass.model)
+      extra.passes += 1
+      if (pass.type === 'advisor_message') extra.advisor += 1
+      if (at === null) extra.unpriced += 1
+      else extra.usd += priceCounters(at.row, pass.usage, false).usd
+    }
+    return { usd: own.usd, priced: own.priced, key: hit === null ? null : hit.key, parts: own.parts, tokens: own.tokens, context: own.context, extra }
   }
 
   return { price, resolve, ratesFor }

@@ -29,7 +29,8 @@
 import { NAME, VERSION, CARD_FILE, PIN_CARD, DATA_DIR, MAX_ERRORS, ERROR_LOG_CAP, LOG_PART_CAP, LOG_MAX_PARTS } from './lib/pins.js'
 import * as State from './lib/state.js'
 import { FORCE_SERVER } from './lib/runtime_mode.js'
-import { makePricer, modelClass, effortClass } from './lib/pricing.js'
+import { SUB_TEXT } from './lib/subagents.js'
+import { makePricer, booked, advisorCallsIn, mainPass, modelClass, effortClass } from './lib/pricing.js'
 import {
   newTracker,
   noteSubmit,
@@ -47,8 +48,8 @@ import {
 import { sendLine, NOTICE } from './lib/format.js'
 import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, errText, tailLines, mergeRows } from './lib/util.js'
 import { meterView, noteSeries } from './lib/meterview.js'
-import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js' 
-import { buildRouteBody, estimateRequest, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, scrub, cleanText, MAX_HISTORY_MESSAGES, displayText } from './lib/iq_client.js'
+import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
+import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, scrub, cleanText, MAX_HISTORY_MESSAGES, displayText } from './lib/iq_client.js'
 import { readKey, validKey, trafficOff, homeFrom, pathIn } from './lib/traffic.js'
 import { guessEffort, sameModel, capEffort } from './lib/models.js'
 import {
@@ -68,8 +69,12 @@ import {
   settlePause,
   settleRefused,
   noteMainStep,
+  noteCompaction,
   noteRecStep,
   noteTurnDone,
+  savedCacheStart,
+  cacheStartText,
+  CACHE_START_FILE,
   decisionRow,
   lineFor,
   statusLines,
@@ -79,6 +84,7 @@ import {
   cacheTtlMs,
   onSubscription,
   ttlIsKnown,
+  writeTtlMs,
 } from './lib/router.js'
 import { registerRoute } from './route_handlers.js'
 import { measureTaskBudget } from './route_handlers.js'
@@ -105,61 +111,61 @@ function iqAccess($) {
 
 const serverMode = () => FORCE_SERVER
 
-let T = newTracker() 
-let M = newMeter() 
-let R = newRouter() 
-let RM = newRuntime() 
+let T = newTracker()
+let M = newMeter()
+let R = newRouter()
+let RM = newRuntime()
 
 function newMeter() {
   return {
-    ready: false, 
-    off: null, 
+    ready: false,
+    off: null,
     tableHash: null,
     pricer: null,
     root: null,
     home: null,
     sessionId: null,
     startedMs: 0,
-    nowMs: 0, 
+    nowMs: 0,
     errors: 0,
     quiet: false,
-    sent: null, 
+    sent: null,
     usage: { rateLimits: [], contextTokens: undefined },
     lastPlan: '',
     read: { state: 'idle', data: null, note: '' },
-    tab: 'routing', 
-    series: [], 
+    tab: 'routing',
+    series: [],
     readEpoch: 0,
     epoch: 0,
-    boot: 'idle', 
+    boot: 'idle',
     bootAsOf: 0,
     effortTried: false,
-    interactive: false, 
-    endReason: null, 
-    provisionalKnown: false, 
+    interactive: false,
+    endReason: null,
+    provisionalKnown: false,
     chain: Promise.resolve(),
     errChain: Promise.resolve(),
-    errQueue: [], 
+    errQueue: [],
   }
 }
 
 function newRuntime() {
   return {
-    ready: false, 
+    ready: false,
     pricer: null,
     root: null,
     home: null,
     cwd: null,
-    nowMs: 0, 
+    nowMs: 0,
     requestEpoch: 0,
-    planProbe: null, 
-    typedPrompts: [], 
-    pending: null, 
-    byTurn: new Map(), 
-    turnSteps: new Map(), 
-    chain: Promise.resolve(), 
+    planProbe: null,
+    typedPrompts: [],
+    pending: null,
+    byTurn: new Map(),
+    turnSteps: new Map(),
+    chain: Promise.resolve(),
     errChain: Promise.resolve(),
-    errQueue: [], 
+    errQueue: [],
     day: '',
     part: 0,
     ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false },
@@ -192,7 +198,7 @@ function scheduleSessionDefaults($) {
       if (!key) return
       const destination = destinationFrom(await safe($.settings.read({ source: 'user' })))
       if (SD === record && record.sid === M.sessionId) record.client.request({ ...destination, key })
-    })().catch(() => {}) 
+    })().catch(() => {})
   })
 }
 
@@ -205,13 +211,13 @@ function prepareSessionDefaults($) {
 export function register(on, options = {}) {
   const configuredKey = options.iq_api_key
   pluginKey = () => configuredKey
-  
+
   registerRoute(on, { getR: () => R, getRM: () => RM, getM: () => M, getT: () => T, pluginKey,
   })
-  
 
-  
-  
+
+
+
   on('session.start', async ($, e, next) => {
     try {
       await startMeter($, e)
@@ -223,7 +229,7 @@ export function register(on, options = {}) {
     } catch (err) {
       await rtNoteError($, 'session.start', err)
     }
-    uiReset() 
+    uiReset()
     try { startSessionDefaults($) } catch (_) {}
     const result = await next(e)
     try {
@@ -235,11 +241,11 @@ export function register(on, options = {}) {
     return result
   })
 
-  
-  
-  
+
+
+
   on('prompt.submit', async ($, e, next) => {
-    await safe(ensureInteractive($)) 
+    await safe(ensureInteractive($))
     let sub = null
     if (M.ready && !M.quiet) {
       try {
@@ -259,7 +265,7 @@ export function register(on, options = {}) {
     try { result = await next(e) } catch (err) { if (rsub !== null) rtDropped(rsub); throw err }
     if (rsub !== null && result && result.drop !== undefined) {
       try {
-        rtDropped(rsub) 
+        rtDropped(rsub)
       } catch (err) {
         await rtNoteError($, 'prompt.submit', err)
       }
@@ -278,7 +284,7 @@ export function register(on, options = {}) {
     }
     await flushErrors($)
     return result
-  }).catch(($, e, next) => next(e)) 
+  }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
     if (M.ready && !M.quiet) {
@@ -300,9 +306,9 @@ export function register(on, options = {}) {
     return result
   })
 
-  
-  
-  
+
+
+
   on('turn.step', async function* ($, e, next) {
     let begun = { e2: e, startMs: null, rec: null }
     try {
@@ -336,18 +342,18 @@ export function register(on, options = {}) {
         result = s.value
         finished = true
       } catch (err) {
-        finished = true 
+        finished = true
         if (started) throw err
         await rtNoteError($, 'turn.step.rewrite', err)
-        if (begun.rec !== null) settleRefused(R, begun.rec) 
+        if (begun.rec !== null) settleRefused(R, begun.rec)
         begun = { e2: e, startMs: begun.startMs, rec: begun.rec }
         result = yield* next(e)
       } finally {
         if (!finished && stream !== null) {
           try {
-            await stream.return(undefined) 
+            await stream.return(undefined)
           } catch (_) {
-            
+
           }
         }
       }
@@ -380,27 +386,39 @@ export function register(on, options = {}) {
     }
     const result = await next(e)
     try {
-      await rtComplete($, e) 
+      await rtComplete($, e)
     } catch (err) {
       await rtNoteError($, 'turn.complete', err)
     }
-    uiTurnDone() 
+    uiTurnDone()
     if (M.ready && !M.quiet) {
       try {
-        await flushRows($, M.nowMs) 
+        await flushRows($, M.nowMs)
       } catch (err) {
         countError($, 'turn.complete', err)
       }
     }
     await flushErrors($)
     if (line === null || !M.interactive) return result
-    
+
     const inner = result && typeof result.text === 'string' && result.text !== e.answer && result.text !== '' ? result.text + '\n' : ''
     return { ...result, text: inner + line }
   })
 
-  
-  
+
+
+  on('session.compact', { trigger: ['manual', 'auto', 'plugin'] }, async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (!e.agentId && result && !result.skip) noteCompaction(R)
+    } catch (err) {
+      await rtNoteError($, 'session.compact', err, { count: false })
+    }
+    return result
+  })
+
+
+
   on('session.attach', async ($, e, next) => {
     const result = await next(e)
     try {
@@ -430,9 +448,9 @@ export function register(on, options = {}) {
     return result
   })
 
-  
+
   on('session.end', async ($, e, next) => {
-    
+
     R.armed = false
     RM.requestEpoch += 1
     if (SD) SD.client.end()
@@ -449,13 +467,13 @@ export function register(on, options = {}) {
     } catch (err) {
       await rtNoteError($, 'session.end', err)
     }
-    uiEnd() 
+    uiEnd()
     await flushErrors($)
     return next(e)
   })
 
-  
-  
+
+
   on('command.run', { command: 'cost-read' }, async ($, e, next) => {
     try {
       return await onCostRead($, e)
@@ -477,7 +495,7 @@ export function register(on, options = {}) {
     }
   })
 
-  
+
   registerUi(on, {
     pluginKey,
     ready: () => M.ready && !M.quiet,
@@ -496,7 +514,7 @@ export function register(on, options = {}) {
     tab: { get: () => M.tab, set: (t) => (M.tab = t) },
     notReadyText: () => NOTICE.notReady + (M.off || 'it did not start') + '.',
   })
-  
+
 }
 
 
@@ -505,20 +523,20 @@ export function register(on, options = {}) {
 async function startMeter($, e) {
   M = newMeter()
   T = newTracker()
-  M.interactive = !!(e && e.isInteractive === true) 
-  if (!M.interactive) await ensureInteractive($) 
+  M.interactive = !!(e && e.isInteractive === true)
+  if (!M.interactive) await ensureInteractive($)
   M.root = $.plugin.root
   M.startedMs = await $.clock.now()
   M.nowMs = M.startedMs
   M.home = await userHome($)
-  
+
   try {
     await $.command.register({ name: 'cost-read', description: 'Cost read of this session (API-equivalent dollars)', argumentHint: '[session id]', immediate: true })
     await $.command.register({ name: 'iq', description: 'IQ routing, cost and plan at a glance', immediate: true })
   } catch (err) {
     countError($, 'session.start.command', err)
   }
-  
+
   State.loadSettings(null)
   try {
     const path = pathIn(M.home, '.claude/iq/settings.json')
@@ -541,6 +559,8 @@ async function startMeter($, e) {
   const usage = await safe($.session.usage())
   if (usage) takeUsage(usage)
   M.bootAsOf = M.startedMs
+  const held = await safe($.session.turns())
+  if (typeof held === 'number' && held > 0) T.resumed = true
   await maybeBootstrap($, false)
 }
 
@@ -607,16 +627,16 @@ async function onSubmit($, e) {
   const nowMs = typeof got[0] === 'number' ? got[0] : M.nowMs
   M.nowMs = nowMs
   if (syncSession(got[1])) {
-    
+
     M.bootAsOf = nowMs
     await maybeBootstrap($, true)
   }
   const usage = await safe($.session.usage())
   if (usage) takeUsage(usage)
-  
+
   const prev = usage ? M.usage.contextTokens : T.lastMainCtx === null ? undefined : T.lastMainCtx
-  
-  
+
+
   const estimate = prev === undefined && M.interactive ? safe($.session.usage({ breakdown: 'summary' })) : null
   const chars = typeof e.text === 'string' ? e.text.length : 0
   const pend = noteSubmit(T, { kind, nowMs, chars })
@@ -655,7 +675,7 @@ function syncSession(sid) {
   if (typeof sid !== 'string' || sid === '') return false
   if (M.sessionId === null) {
     M.sessionId = sid
-    if (M.boot !== 'idle') return false 
+    if (M.boot !== 'idle') return false
     noteNewSession()
     return true
   }
@@ -677,6 +697,7 @@ function noteNewSession() {
   if (why === 'clear') M.effortTried = false
   else if (why !== null) {
     T.historyKnown = true
+    T.resumed = true
     M.provisionalKnown = true
   }
 }
@@ -701,7 +722,7 @@ async function stepBegin($, e) {
   M.nowMs = nowMs
   const key = String(e.turnId) + ':' + String(e.index) + ':' + (e.agentId ? String(e.agentId) : '')
   onStepStart(T, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
-  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort } 
+  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort }
   $.ui.invalidate('ui.render')
   return key
 }
@@ -711,8 +732,15 @@ async function stepEnd($, e, key, result) {
   M.nowMs = nowMs
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
   const model = (u && u.model) || e.model
-  const price = u ? M.pricer.price(model, u, { main: !e.agentId }) : null
-  onStepEnd(T, { key, agentId: e.agentId, model, effort: e.effort, hasUsage: price !== null, price, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
+
+  const advisorCalls = advisorCallsIn(result)
+  const priced = u ? M.pricer.price(model, u, { main: !e.agentId, passes: advisorCalls + 1 }) : null
+
+
+  const price = priced === null ? null : booked(priced, advisorCalls)
+
+  const mainCtx = u && !e.agentId ? mainPass(u, model, advisorCalls).ctx : undefined
+  onStepEnd(T, { key, agentId: e.agentId, model, effort: e.effort, hasUsage: price !== null, price, mainCtx, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
     usageComplete: !!u && ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].every((k) => Number.isSafeInteger(u[k]) && u[k] >= 0) })
   if (T.cur && T.cur.human) noteSeries(M.series, T.cur.idx, T.cur.usd)
   $.ui.invalidate('ui.render')
@@ -728,10 +756,10 @@ async function onComplete($, e) {
   $.ui.invalidate('ui.render')
   if (!r.isMain || !r.seg) return null
   const seg = r.seg
-  
+
   if (seg.k === 0 || !M.interactive) return null
-  
-  
+
+
   return null
 }
 
@@ -744,8 +772,8 @@ async function onEnd($, e) {
     await flushRows($, nowMs)
   } finally {
     if (e.reason === 'clear' || e.reason === 'resume') {
-      resetForNewSession(null) 
-      M.endReason = e.reason 
+      resetForNewSession(null)
+      M.endReason = e.reason
     }
   }
 }
@@ -803,7 +831,7 @@ async function flushErrors($) {
       M.errChain = M.errChain.then(run, run)
       await M.errChain
     } catch (_) {
-      
+
     }
   }
   if (RM.errQueue.length > 0) {
@@ -819,7 +847,7 @@ async function flushErrors($) {
       RM.errChain = RM.errChain.then(run, run)
       await RM.errChain
     } catch (_) {
-      
+
     }
   }
 }
@@ -841,9 +869,13 @@ async function ensureInteractive($) {
 function say($, text) {
   if (!M.interactive) return
   try {
+    if (text === TEXT.quiet) {
+      if (R.failureNotices.has('quiet')) return
+      R.failureNotices.add('quiet')
+    }
     void safe($.ui.log(displayText(text)))
   } catch (_) {
-    
+
   }
 }
 
@@ -910,9 +942,9 @@ async function rtStart($, e) {
   RM.home = await userHome($)
   RM.cwd = e && typeof e.cwd === 'string' ? e.cwd : null
   RM.root = $.plugin.root
-  
+
   try {
-    await $.command.register({ name: 'iq-route', description: "Route this session's model and thinking level with IQ: on, off or status", argumentHint: 'on|off|status', immediate: true })
+    await $.command.register({ name: 'iq-route', description: "Route this session's model and thinking level with IQ: on, off, status or reset. Wait up to 7 s for the first route or after ten minutes without a route call, 4 s otherwise; IQ_ROUTER_DEADLINE_MS overrides.", argumentHint: 'on|off|status|reset|subagents on|off', immediate: true })
   } catch (err) {
     await rtNoteError($, 'session.start.command', err)
   }
@@ -960,17 +992,22 @@ async function rtKillCheck($) {
 }
 
 
-async function rtSettings($) {
+async function rtReadTtl($) {
   const force = await safe($.env.get('FORCE_PROMPT_CACHING_5M'))
   const envTtl = await safe($.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL'))
   const one = await safe($.env.get('ENABLE_PROMPT_CACHING_1H'))
   const s = await safe($.settings.read())
-  RM.ttl = {
+  return {
     force5m: truthy(force),
     envTtl: typeof envTtl === 'string' ? envTtl.trim() : '',
     settingTtl: s && typeof s.promptCacheTtl === 'string' ? s.promptCacheTtl : '',
     enable1h: truthy(one),
   }
+}
+
+
+async function rtSettings($) {
+  RM.ttl = await rtReadTtl($)
 }
 
 
@@ -980,7 +1017,7 @@ async function rtNamedHint($) {
   const sessionModel = await safe($.session.model())
   const model = typeof sessionModel === 'string' && sessionModel !== '' ? sessionModel : R.named ? R.named.model : undefined
   if (R.named && sameModel(R.named.model, model)) return { model, effort: R.named.effort }
-  
+
   if (!R.named && R.last && sameModel(R.last.model, model)) return { model, effort: R.last.effort }
   const env = await safe($.env.get('CLAUDE_CODE_EFFORT_LEVEL'))
   const sources = {}
@@ -997,15 +1034,15 @@ const rtIsHuman = (e) => {
 
 
 async function rtSubmit($, e) {
-  if (!RM.ready || !R.armed || !rtIsHuman(e)) return null 
-  if (e.turnId !== undefined) return null 
+  if (!RM.ready || !R.armed || !rtIsHuman(e)) return null
+  if (e.turnId !== undefined) return null
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
   await rtKillCheck($)
   const plan = planSubmit(R, nowMs, R.ttlMs)
   if (plan.action === 'skip') return null
   R.seq += 1
-  R.deadlineMs = deadlineFrom(await safe($.env.get('IQ_ROUTER_DEADLINE_MS')))
+  R.deadlineMs = State.routeDeadline(M.sessionId, await safe($.env.get('IQ_ROUTER_DEADLINE_MS')), nowMs)
   const sessionModel = R.named ? null : await safe($.session.model())
   const rec = newRecord(R, { nowMs, sessionModel })
   rec.counted = plan.counted
@@ -1022,7 +1059,7 @@ async function rtSubmit($, e) {
     rec.local = { action: 'local', phase: 'error', reason: 'error', source: 'none', counted: true, error: 'no_key' }
     return sub
   }
-  
+
   rec.result = null
   let finish
   rec.job = new Promise((resolve) => {
@@ -1063,9 +1100,12 @@ function rtDropped(sub) {
 
 async function rtFetch($, req, ms, runtime, requestEpoch) {
   if (ms <= 0 || !R.armed || await trafficOff(iqAccess($)) || RM !== runtime || RM.requestEpoch !== requestEpoch) return null
+  const callMs = await $.clock.now()
   return new Promise((resolve, reject) => {
     let done = false
     const timer = $.clock.after(ms, () => { if (!done) { done = true; resolve(null) } })
+    consumeRouteReset(R, req)
+    State.noteRouteCall(M.sessionId, callMs)
     $.http.fetch(req.url, req.init).then(
       (res) => { if (!done) { done = true; timer.cancel(); resolve(res) } },
       (err) => { if (!done) { done = true; timer.cancel(); reject(err) } },
@@ -1111,7 +1151,7 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
     }
     return c
   } catch (err) {
-    await rtNoteError($, 'estimate', err, { secrets: [key], count: false })
+    await rtNoteError($, 'estimate', new Error('network'), { count: false })
     return { kind: 'error', code: 'network', latencyMs: 0, doneMs: RM.nowMs }
   }
 }
@@ -1122,7 +1162,7 @@ function rtTurnStart(e) {
   RM.pending = null
   rec.turnId = e.turnId
   RM.byTurn.set(e.turnId, rec)
-  if (RM.byTurn.size > 64) RM.byTurn.delete(RM.byTurn.keys().next().value) 
+  if (RM.byTurn.size > 64) RM.byTurn.delete(RM.byTurn.keys().next().value)
 }
 
 
@@ -1135,11 +1175,11 @@ async function rtStepBegin($, e) {
   const out = { e2: e, startMs: null, rec: null, changed: false }
   if (!RM.ready) return out
   const main = e.agentId === undefined || e.agentId === null
-  if (!main) return out 
+  if (!main) return out
   const rec = RM.byTurn.get(e.turnId) || null
   if (!rec && !rtLive()) {
-    
-    
+
+
     out.startMs = await $.clock.now()
     return out
   }
@@ -1152,7 +1192,7 @@ async function rtStepBegin($, e) {
   out.startMs = await $.clock.now()
   RM.nowMs = out.startMs
   if (rec !== null && rec.decided) out.e2 = rtApply(e, rec)
-  out.changed = out.e2 !== e 
+  out.changed = out.e2 !== e
   return out
 }
 
@@ -1209,7 +1249,7 @@ async function rtDecide($, rec) {
       settleNone(R, rec, 'error', 'error', 'http_429')
       await rtNoteError($, 'iq', new Error('http_429'), { count: false })
     } else if (['plan_required', 'allowance', 'free_quota', 'free_daily', 'auth_required'].includes(c.kind)) {
-      
+
       rec.latencyMs = typeof c.latencyMs === 'number' ? c.latencyMs : null
       settlePause(R, rec, c.kind === 'plan_required' ? 'plan' : c.kind === 'auth_required' ? 'auth' : c.kind, t1)
       await rtNoteError($, 'iq', new Error(c.code), { count: false })
@@ -1225,13 +1265,13 @@ async function rtDecide($, rec) {
     say($, TEXT.quiet)
   }
   rtLineFor($, rec, t1)
-  $.ui.invalidate('ui.render') 
+  $.ui.invalidate('ui.render')
 }
 
 
 function rtLineFor($, rec, nowMs) {
   if (rec.phase === 'paused') {
-    if (['plan_required', 'allowance_exceeded', 'free_quota_exhausted', 'free_global_daily_quota_exhausted', 'key_rejected'].includes(rec.error)) R.pauseNoted = true 
+    if (['plan_required', 'allowance_exceeded', 'free_quota_exhausted', 'free_global_daily_quota_exhausted', 'key_rejected'].includes(rec.error)) R.pauseNoted = true
     else {
       if (R.pauseNoted) return
       R.pauseNoted = true
@@ -1241,6 +1281,11 @@ function rtLineFor($, rec, nowMs) {
     R.backoffNoted = true
   } else if (rec.error === 'http_429') R.backoffNoted = true
   const line = lineFor(rec, nowMs, R)
+  if (line !== null && ['timeout', 'error', 'paused'].includes(rec.phase)) {
+    const code = rec.error || (R.pause && R.pause.kind) || rec.phase
+    if (R.failureNotices.has(code)) return
+    R.failureNotices.add(code)
+  }
   if (line !== null) say($, line)
   const usage = usageLine(R, nowMs)
   if (usage && rec.source === 'iq_block') say($, usage)
@@ -1254,7 +1299,7 @@ function rtRace($, promise, ms) {
       try {
         if (timer && typeof timer.cancel === 'function') timer.cancel()
       } catch (_) {
-        
+
       }
       resolve()
     }
@@ -1266,15 +1311,57 @@ function rtRace($, promise, ms) {
 async function rtStepEnd($, e2, result, begun) {
   if (begun.startMs === null || e2.agentId) return
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
-  if (u === null) return 
+  if (u === null) return
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
-  const prev = R.last 
-  noteMainStep(R, { model: e2.model, effort: e2.effort, startMs: begun.startMs, endMs: nowMs, usage: u, routed: begun.changed === true })
+  await rtCacheStartLoad($)
+  const prev = R.last
+  const started = R.cacheStart
+  const sessionModel = await safe($.session.model())
+
+  const observed = await safe($.session.usage())
+  const rateLimits = observed && observed.rateLimits
+  const settings = await rtReadTtl($)
+  const derivedMs = ttlIsKnown(settings, rateLimits) ? cacheTtlMs({ ...settings, onSubscription: onSubscription(rateLimits) }) : null
+  const ttlMs = writeTtlMs({ derivedMs, usage: u, prev, model: e2.model })
+  noteMainStep(R, { model: e2.model, effort: e2.effort, startMs: begun.startMs, endMs: nowMs, usage: u, routed: begun.changed === true, sessionModel, ttlMs, advisorCalls: advisorCallsIn(result) })
   RM.turnSteps.set(e2.turnId, (RM.turnSteps.get(e2.turnId) || 0) + 1)
   if (begun.rec !== null && RM.pricer !== null) {
-    
-    noteRecStep(begun.rec, { model: e2.model, usage: u, pricer: RM.pricer, prev, startMs: begun.startMs, ttlMs: R.ttlKnown ? R.ttlMs : 60 * 60 * 1000, changed: begun.changed === true })
+
+    noteRecStep(begun.rec, { model: e2.model, usage: u, pricer: RM.pricer, prev, startMs: begun.startMs, ttlMs: R.ttlKnown ? R.ttlMs : 60 * 60 * 1000, changed: begun.changed === true, advisorCalls: advisorCallsIn(result) })
+  }
+  if (R.cacheStart && R.cacheStart !== started) await rtCacheStartSave($, R.cacheStart)
+}
+
+
+
+async function rtCacheStartLoad($) {
+  const router = R
+  if (router.cacheStartRead === true) return
+  router.cacheStartRead = true
+  if (router.cacheStart || !RM.home) return
+  const sid = await safe($.session.id())
+  if (typeof sid !== 'string' || sid === '' || sid.length > 64) return
+  const path = pathIn(RM.home, DATA_DIR, CACHE_START_FILE)
+  if (!(await safe($.fs.exists(path)))) return
+  const saved = savedCacheStart(await safe($.fs.read(path)), sid)
+  if (saved !== null && R === router && !router.cacheStart) router.cacheStart = saved
+}
+
+async function rtCacheStartSave($, start) {
+  if (!RM.home) return
+  const sid = await safe($.session.id())
+  if (typeof sid !== 'string' || sid === '' || sid.length > 64) return
+  const path = pathIn(RM.home, DATA_DIR, CACHE_START_FILE)
+  const run = async () => {
+    const old = (await $.fs.exists(path)) ? await $.fs.read(path) : ''
+    await $.fs.write(path, cacheStartText(old, sid, start))
+  }
+  RM.chain = RM.chain.then(run, run)
+  try {
+    await RM.chain
+  } catch (err) {
+    await rtNoteError($, 'cache.start', err, { count: false })
   }
 }
 
@@ -1290,11 +1377,11 @@ async function rtComplete($, e) {
   if (rec === null) return
   RM.byTurn.delete(e.turnId)
   noteTurnDone(R, rec)
-  
+
   if (!rec.decided) settleNone(R, rec, 'off', 'off')
-  
-  
-  
+
+
+
   if (rec.routed && rec.steps === 0 && e.reason === 'error' && !R.stopped) {
     R.stopped = true
     rec.error = 'routed_request_rejected'
@@ -1313,7 +1400,7 @@ async function rtEnd($, e) {
   if (!RM.ready) return
   const open = []
   for (const rec of RM.byTurn.values()) {
-    if (!rec.decided) settleNone(R, rec, 'off', 'off') 
+    if (!rec.decided) settleNone(R, rec, 'off', 'off')
     if (!rec.done) {
       noteTurnDone(R, rec)
       open.push(rec)
@@ -1321,7 +1408,7 @@ async function rtEnd($, e) {
   }
   RM.byTurn.clear()
   if (open.length > 0) await rtWriteRows($, open)
-  
+
   if (e && (e.reason === 'clear' || e.reason === 'resume')) {
     const flags = { killed: R.killed, cardBad: R.cardBad }
     R = newRouter()
@@ -1362,13 +1449,13 @@ async function rtWriteFile($, rows, nowMs) {
   for (let part = RM.part; part < LOG_MAX_PARTS; part++) {
     const path = pathIn(dir, day + (part === 0 ? '' : '-' + (part + 1)) + '.jsonl')
     let text = ''
-    if (await $.fs.exists(path)) text = await $.fs.read(path) 
+    if (await $.fs.exists(path)) text = await $.fs.read(path)
     if (text.length + addLen > LOG_PART_CAP) continue
     await $.fs.write(path, mergeRows(text, rows))
     RM.part = part
     return
   }
-  
+
 }
 
 
@@ -1416,8 +1503,8 @@ async function rtPlanCheck($, current) {
 
 async function rtCommand($, e) {
   if (!userOrigin(e)) return {}
-  
-  
+
+
   if (!(await ensureInteractive($))) return {}
   const arg = (typeof e.args === 'string' ? e.args : '').trim().toLowerCase()
   const nowMs = await $.clock.now()
@@ -1431,7 +1518,7 @@ async function rtCommand($, e) {
     if (R.killed) return { text: TEXT.killed }
     if (!R.hasKey) return { text: TEXT.noKey }
     if (!RM.home) return { text: TEXT.noHome }
-    if (R.stopped) return { text: TEXT.stopped } 
+    if (R.stopped) return { text: TEXT.stopped }
     if (R.pause && R.pause.kind === 'plan') return { text: planPauseText(R) }
     if (!R.armed && !R.plan) {
       if (!runtime.planProbe || runtime.planProbe.epoch !== requestEpoch) {
@@ -1467,11 +1554,14 @@ async function rtCommand($, e) {
     R.errors = 0
     R.iqFails = 0
     $.ui.invalidate('ui.render')
-    return { text: onLine(R, nowMs) }
+    const lines = [onLine(R, nowMs)]
+    if (serverMode()) lines.push(State.getSetting('subagentRouting') === true ? SUB_TEXT.pubStatusOn : SUB_TEXT.pubStatusOff)
+    return { text: lines.join('\n') }
   }
   if (arg === 'off') {
     RM.requestEpoch += 1
     R.armed = false
+    if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) R.pause = null
     if (R.current && !R.current.decided) settleNone(R, R.current, 'off', 'off')
     R.current = null
     R.named = null
@@ -1479,11 +1569,15 @@ async function rtCommand($, e) {
     return { text: TEXT.off }
   }
   if (arg === 'reset') {
+    R.resetNextRoute = true
     return { text: TEXT.reset }
   }
   if (arg === 'status' || arg === '') {
     if (RM.ready) await rtGates($)
-    return { text: statusLines(R, nowMs).map(displayText).join('\n') }
+    const lines = statusLines(R, nowMs).map(displayText)
+
+    if (serverMode()) lines.push(State.getSetting('subagentRouting') === true ? SUB_TEXT.pubStatusOn : SUB_TEXT.pubStatusOff)
+    return { text: lines.join('\n') }
   }
   return { text: TEXT.usage }
 }
