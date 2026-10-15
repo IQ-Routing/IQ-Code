@@ -45,7 +45,7 @@ export const resetPassed = (resetsAtSeconds, nowMs) => windowReset(resetsAtSecon
 function combinedRows(rateLimits, persistedRows, nowMs) {
   const combined = new Map()
   let expired = false
-  
+
   for (const raw of Array.isArray(persistedRows) ? persistedRows : []) {
     const row = normalizeRow(raw)
     if (!row || row.resets_at === null) continue
@@ -55,7 +55,7 @@ function combinedRows(rateLimits, persistedRows, nowMs) {
   for (const raw of Array.isArray(rateLimits) ? rateLimits : []) {
     const row = normalizeRow(raw)
     if (!row) continue
-    
+
     combined.delete(row.kind)
     if (row.resets_at !== null && resetPassed(row.resets_at, nowMs)) { expired = true; continue }
     combined.set(row.kind, row)
@@ -68,7 +68,7 @@ function combinedRows(rateLimits, persistedRows, nowMs) {
 
 function explicitMode(planType, settings) {
   if (['api', 'subscription'].includes(settings.planType)) return settings.planType
-  
+
   if (typeof planType === 'string' && BILLING_MODES.includes(planType)) return planType
   if (!planType || typeof planType !== 'object') return null
   if (['api', 'subscription'].includes(planType.setting)) return planType.setting
@@ -80,7 +80,7 @@ function detectedMode({ authKind, apiKeyPresent, planType, settings, rows, expir
   const explicit = explicitMode(planType, settings)
   if (explicit !== null) return explicit
   if (apiKeyPresent === true || authKind === 'api-key') return 'api'
-  
+
   if (authKind === null) return 'unknown'
   if (authKind === 'bearer') return rows.length === 0 && expired ? 'unknown' : 'subscription'
   const detected = planType && typeof planType === 'object' ? planType.planType : null
@@ -111,8 +111,8 @@ export function limitsFacts({
   const options = settings && typeof settings === 'object' ? settings : {}
   const { rows: normalized, expired } = combinedRows(rateLimits, persistedRows, now)
   let billing_mode = detectedMode({ authKind, apiKeyPresent, planType, settings: options, rows: normalized, expired })
-  
-  
+
+
   const boundedOverPlan = normalized.some((row) => PLAN_KINDS.includes(row.kind) && row.percent_used >= 100 && row.resets_at !== null)
   if (billing_mode === 'subscription' && extraUsage === true && boundedOverPlan) billing_mode = 'extra_usage'
   const rows = billing_mode === 'api' ? [] : normalized

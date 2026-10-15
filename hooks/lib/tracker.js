@@ -38,39 +38,39 @@ export const isHumanKind = (kind) => HUMAN_KINDS.has(kind)
 
 export function newTracker() {
   return {
-    
-    usd: 0, 
+
+    usd: 0,
     measured: newMeasuredLedger(),
     measuredStartMs: null,
-    ownUsd: 0, 
+    ownUsd: 0,
     calls: 0,
     mainCalls: 0,
     helperCalls: 0,
     helperUsd: 0,
-    unpriced: 0, 
-    ownUnpriced: 0, 
-    advisorUnpriced: 0, 
+    unpriced: 0,
+    ownUnpriced: 0,
+    advisorUnpriced: 0,
     activeMs: 0,
     lastCallMs: null,
-    humanPrompts: 0, 
-    boot: null, 
-    
+    humanPrompts: 0,
+    boot: null,
+
     lastMainEndMs: null,
     lastMainCtx: null,
     lastMainModel: null,
     lastMainModelClass: null,
     lastMainEffortClass: null,
-    historyKnown: false, 
-    resumed: false, 
-    
+    historyKnown: false,
+    resumed: false,
+
     helpers: new Map(),
-    subagentTotals: new Map(), 
+    subagentTotals: new Map(),
     omittedSubagents: false,
-    
+
     segCount: 0,
     cur: null,
     recent: [],
-    pending: null, 
+    pending: null,
     inflight: new Map(),
     turnOpen: false,
   }
@@ -84,16 +84,16 @@ function newSegment(idx, nowMs, human) {
     k: 0,
     usd: 0,
     measured: newMeasuredLedger(),
-    ownUsd: 0, 
+    ownUsd: 0,
     unpriced: 0,
     advisorUnpriced: 0,
     mainCalls: 0,
     helperCalls: 0,
     helperUsd: 0,
-    lastEstimate: null, 
+    lastEstimate: null,
     completed: false,
     usageIncomplete: false,
-    ctx: null, 
+    ctx: null,
     mainModel: null,
     mainModelClass: null,
     mainEffortClass: null,
@@ -104,7 +104,7 @@ function newSegment(idx, nowMs, human) {
     ctx0: null,
     cold0: undefined,
     state0: null,
-    pend: null, 
+    pend: null,
     turns: 0,
     turnsDone: 0,
     helpersMax: 0,
@@ -126,7 +126,7 @@ export function aliveHelpers(T, nowMs) {
 export function coldFlag(T, nowMs) {
   if (T.lastMainEndMs !== null) return nowMs - T.lastMainEndMs > COLD_GAP_MS
   if (T.historyKnown) return undefined
-  return true 
+  return true
 }
 
 
@@ -224,7 +224,7 @@ function pruneHelpers(T, nowMs) {
 
 export function onStepStart(T, a) {
   T.inflight.set(a.key, { agentId: a.agentId || null, ms: a.nowMs })
-  if (T.inflight.size > MAX_INFLIGHT) T.inflight.delete(T.inflight.keys().next().value) 
+  if (T.inflight.size > MAX_INFLIGHT) T.inflight.delete(T.inflight.keys().next().value)
   if (a.agentId) {
     let h = T.helpers.get(a.agentId)
     if (!h) {
@@ -243,7 +243,7 @@ export function onStepStart(T, a) {
   const seg = T.cur
   T.turnOpen = true
   seg.completed = false
-  
+
   if (a.model) {
     seg.mainModel = a.model
     seg.mainModelClass = a.modelClass || seg.mainModelClass
@@ -281,12 +281,12 @@ export function onStepEnd(T, a) {
   }
   seg.k += 1
   if (a.usageComplete === false) seg.usageIncomplete = true
-  
-  
+
+
   const dollars = Number.isFinite(a.price.usd) ? a.price.usd : 0
-  const own = Number.isFinite(a.price.own) ? a.price.own : dollars 
+  const own = Number.isFinite(a.price.own) ? a.price.own : dollars
   const partial = !a.price.priced || a.price.partial === true
-  const advisor = Number.isInteger(a.price.advisor) && a.price.advisor > 0 ? a.price.advisor : 0 
+  const advisor = Number.isInteger(a.price.advisor) && a.price.advisor > 0 ? a.price.advisor : 0
   seg.usd += dollars
   seg.ownUsd += own
   seg.advisorUnpriced += advisor
@@ -325,7 +325,7 @@ export function onStepEnd(T, a) {
     if (a.effort !== undefined && a.effort !== null) T.lastMainEffortClass = a.effortClass || 'unknown'
     T.mainCalls += 1
   }
-  
+
   T.calls += 1
   T.usd += dollars
   T.ownUsd += own
@@ -375,9 +375,9 @@ export function sessionMeter(meter, T) {
   return { ...meter, prompt: meter.prompt ? { ...meter.prompt, measured: T.cur ? measuredSnapshot(T.cur.measured) : null,
     spend_usd: T.cur?.measured.calls > 0 ? T.cur.measured.paid_usd : meter.prompt.spend_usd, helper_usd: T.cur ? T.cur.helperUsd : 0,
     helper_calls: T.cur ? T.cur.helperCalls : 0, unpriced: T.cur ? T.cur.unpriced : 0, advisorUnpriced: T.cur ? T.cur.advisorUnpriced : 0 } : null,
-    
-    
-    
+
+
+
     session: { ...meter.session, usd: T.measured.calls > 0 ? T.measured.paid_usd : meter.session?.usd, prompts, last_prompt: last, measured: T.measured.calls > 0 ? { ...measuredSnapshot(T.measured), started_at_ms: T.measuredStartMs, elapsed_ms: T.activeMs, paid_complete: T.measured.paid_complete && !(T.resumed && !T.boot),
       rows: (T.cur ? T.recent.concat([T.cur]) : T.recent).filter((s) => s.measured.calls > 0).slice(-PROMPT_HISTORY_CAP).reverse()
         .map((s) => ({ idx: s.idx, at_ms: s.startMs, completed: s.completed, ...measuredSnapshot(s.measured) })) } : null, unpriced: T.unpriced, advisorUnpriced: T.advisorUnpriced, resumed: T.resumed === true && !T.boot,

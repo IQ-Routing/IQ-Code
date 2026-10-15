@@ -29,8 +29,8 @@ export const ROUTING_KEY_TEXT = 'Routing is paused: IQ did not accept your key. 
 
 export const FREE_ROUTING = Object.freeze({ monthlyCode: 'free_quota_exhausted', dailyCode: 'free_global_daily_quota_exhausted', allowance: 100,
   monthlyText: ROUTING_REFUSED_TEXT, dailyText: ROUTING_REFUSED_TEXT })
-export const BACKOFF_MS = 10 * 60 * 1000 
-export const HISTORY_TOKENS = 8000 
+export const BACKOFF_MS = 10 * 60 * 1000
+export const HISTORY_TOKENS = 8000
 export const CHARS_PER_TOKEN = 4
 export const MAX_HISTORY_MESSAGES = 24
 
@@ -42,7 +42,7 @@ export function cleanText(t) {
   const clean = raw.replace(/<\/?pasted_content(?=[\s/>])[^>]{0,256}>/gi, '').trim()
   const chars = (text) => text.replace(/\s/g, '').length
   const rawChars = chars(raw)
-  
+
   return rawChars > 0 && (clean === '' || chars(clean) < rawChars * 0.1) ? raw : clean
 }
 
@@ -130,7 +130,7 @@ export function buildRouteBody(rows, promptText, secrets, facts) {
     routing.subagent_type = subagentType(facts.subagent_type)
     routing.subagent_read_only = facts.subagent_read_only === true
     routing.subagent_rating_opt_in = true
-    
+
     routing.subagent_brief = scrub(withoutCompleteToolBlocks(nonemptyPrompt(facts.subagent_brief || '')), secrets).slice(0, 16000)
   }
   return { body: { ...built.body, contract_version: 2, routing }, sent: built.sent }
@@ -246,9 +246,9 @@ export function authRequest({ base, dev = false, action, secret, platform, versi
   const body = action === 'start' ? { client_id: 'iq-code', version: 1, os, client_version: label } :
     action === 'token' ? { client_id: 'iq-code', grant_type: 'urn:ietf:params:oauth:grant-type:device_code' } : {}
   const path = action === 'logout' ? '/iq-code/logout' : '/iq-code/device/' + action
-  
-  
-  
+
+
+
   return { url: b + path, init: { method: 'POST', redirect: 'error', headers, body: JSON.stringify(body) } }
 }
 
@@ -325,6 +325,12 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
 
 
 
+export function applyDataFeaturesPreference(request, usageReporting) {
+  request.init.headers['x-iq-data-features'] = usageReporting === 'on' ? 'on' : 'off'
+}
+
+
+
 
 export function consumeRouteReset(router, request) {
   if (!router || !router.resetNextRoute) return
@@ -336,7 +342,7 @@ export function consumeRouteReset(router, request) {
       body.routing.seconds_since_last_call = null
       request.init.body = JSON.stringify(body)
     }
-  } catch {} 
+  } catch {}
 }
 
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,80}$/

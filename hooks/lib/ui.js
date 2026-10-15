@@ -9,7 +9,7 @@ import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 
 
 
-import { paneModel, paneNote, subagentShare, measuredDollars, floorMark, usd, count, plural, percent, resetText, stamp, LABEL, noUsageLine, windowReset, WINDOW_RESET } from './format.js'
+import { paneModel, paneNote, subagentShare, estimatedSavingsText, SAVINGS_NOTE, measuredDollars, floorMark, usd, count, plural, percent, resetText, stamp, LABEL, noUsageLine, windowReset, WINDOW_RESET } from './format.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 import { effortRaise, modelRaise } from './models.js'
 
@@ -19,7 +19,7 @@ const SEP = ' · '
 const SHORT = 'API-eq.'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const BLOCKS = '▁▂▃▄▅▆▇█'
-const DEFAULT_COLOR = 0x01000000 
+const DEFAULT_COLOR = 0x01000000
 
 export const STATUSES = ['off', 'on', 'paused_errors', 'paused_plan', 'paused_allowance', 'paused_no_usage', 'killed', 'no_key',
 ]
@@ -88,7 +88,7 @@ function dateText(s) {
 
 function qualifier(cur) {
   const bits = []
-  
+
   if (isStr(cur.tier) && !(cur.phase === 'applied' && cur.chosen && cur.chosen.effort === cur.tier)) bits.push(cur.tier)
   return bits.length > 0 ? ' (' + bits.join(', ') + ')' : ''
 }
@@ -137,7 +137,7 @@ function pauseLine(r) {
       return { forms: [whole, 'Routing needs the Personal plan ($6/month): ' + PLAN_URL, 'Routing needs the Personal plan: ' + PLAN_URL, 'Needs the Personal plan: ' + PLAN_URL, 'Personal plan: ' + PLAN_URL, PLAN_URL], style: 'warn' }
     }
     case 'paused_allowance':
-      
+
       if (r.last_error === FREE_ROUTING.dailyCode) return { forms: ['Free routing is used up for today, so your model is used' + (date ? ' until ' + date : ''), 'Free routing is used up for today' + (date ? ', back ' + date : ''), 'Free routing used up' + (date ? ', back ' + date : ''), 'Free routing used up'], style: 'warn' }
       return { forms: ["IQ routing used this month's decisions, so your model is used" + (date ? ' until ' + date : ''), 'Routing limit reached, your model is used' + (date ? ' until ' + date : ''), 'Routing limit reached' + (date ? ' until ' + date : ''), 'Routing limit reached'], style: 'warn' }
     case 'killed':
@@ -176,7 +176,7 @@ function badgeOf(r) {
     case 'paused':
       return { text: 'IQ: paused, kept your model', style: 'route_wait' }
     default:
-      return null 
+      return null
   }
 }
 
@@ -330,7 +330,7 @@ function routingTab(r, measured) {
     add('head', 'This session')
     add('plain', plural(s.prompts, 'prompt', 'prompts') + SEP + count(s.routed) + ' routed' + SEP + count(s.kept) + ' kept' + SEP + count(s.no_decision) + ' with no decision')
     if (!measured && isNum(s.est_saved_usd)) {
-      add(s.est_saved_usd > 0 ? 'route_down' : 'plain', (s.est_saved_usd < 0 ? 'est. extra ' : 'est. saved ') + usd(Math.abs(s.est_saved_usd)) + ' (' + LABEL + ')')
+      add(s.est_saved_usd > 0 ? 'route_down' : 'plain', estimatedSavingsText(s.est_saved_usd, usd))
       add('dim', 'An estimate: the same tokens priced at your own model, less what they cost.')
     }
     const bm = s.by_model && typeof s.by_model === 'object' ? Object.keys(s.by_model) : []
@@ -416,7 +416,7 @@ function planTab(m, surface, columns, nowMs) {
   const week = lim.find((l) => l && l.kind === 'seven_day')
   blank()
   if ((five && isNum(five.percent_used)) || (week && isNum(week.percent_used))) {
-    
+
     let finished = false
     if (five && isNum(five.percent_used)) {
       if (windowReset(five.resets_at, nowMs).passed) { finished = true; add('plain', pad('5-hour', 8) + WINDOW_RESET) }
@@ -502,14 +502,15 @@ export function measuredCostLines(m) {
   const paid = (row) => money(row.paid_usd) + (isNum(row.paid_usd) && row.paid_complete === false ? '+' : '')
   const L = [
     { style: 'title', text: 'Measured cost · API-equivalent dollars' },
-    { style: measured.saved_usd < 0 ? 'warn' : 'plain', text: 'Totals: ' + paid(measured) + ' paid' + SEP + money(measured.baseline_usd) + ' baseline' + SEP + money(measured.saved_usd) + ' delta' },
+    { style: measured.saved_usd < 0 ? 'warn' : 'plain', text: 'Totals: ' + paid(measured) + ' paid' + SEP + money(measured.baseline_usd) + ' baseline' + SEP + estimatedSavingsText(measured.saved_usd) },
+    { style: 'dim', text: SAVINGS_NOTE },
     { style: 'dim', text: 'Baseline: your named model at your starting effort, using the same token classes. Switch cache rebuilds count against routing.' },
     { style: 'head', text: 'Turns this session (newest first)' },
   ]
   const rows = Array.isArray(measured.rows) ? measured.rows : []
-  L.push({ style: 'dim', text: 'Delta = baseline − paid − routing rebuild debit (' + money(measured.rebuild_debit_usd) + ').' })
+  L.push({ style: 'dim', text: 'Est. savings = baseline − paid − routing rebuild debit (' + money(measured.rebuild_debit_usd) + ').' })
   for (const row of rows.slice(0, 20)) {
-    L.push({ style: row.saved_usd < 0 ? 'warn' : 'plain', text: '#' + count(row.idx) + SEP + shortModel(row.model) + SEP + (isStr(row.effort) ? row.effort : 'n/a') + SEP + paid(row) + ' paid' + SEP + money(row.baseline_usd) + ' baseline' + SEP + money(row.saved_usd) + ' delta' + (row.skipped ? SEP + 'kept, no savings credited' : '') })
+    L.push({ style: row.saved_usd < 0 ? 'warn' : 'plain', text: '#' + count(row.idx) + SEP + shortModel(row.model) + SEP + (isStr(row.effort) ? row.effort : 'n/a') + SEP + paid(row) + ' paid' + SEP + money(row.baseline_usd) + ' baseline' + SEP + estimatedSavingsText(row.saved_usd) + (row.skipped ? SEP + 'kept, no savings credited' : '') })
     const usage = row.usage || {}
     if (row.rebuild_debit_usd > 0) L.push({ style: 'warn', text: 'Routing rebuild debit: ' + money(row.rebuild_debit_usd) })
     L.push({ style: 'dim', text: [ ['input', 'input'], ['cache read', 'cache_read'], ['5m write', 'cache_write_5m'], ['1h write', 'cache_write_1h'], ['output', 'output'], ['thinking', 'thinking'] ].map(([label, key]) => label + ' ' + (isNum(usage[key]) ? count(usage[key]) : 'n/a')).join(SEP) })

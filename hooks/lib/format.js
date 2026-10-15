@@ -12,7 +12,7 @@ export function routingPreferenceLine(keep, armed, off, enabled) {
   return armed === true ? 'Routing on · kept on' : 'Kept routing is saved; routing remains off under current controls.'
 }
 const SHORT_LABEL = 'API-eq.'
-const SEP = ' · ' 
+const SEP = ' · '
 const BARS = '▁▂▃▄▅▆▇█'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -68,7 +68,7 @@ export function tokens(n) {
 
 export function tokenSize(n) {
   if (!isNum(n) || n < 0) return '?'
-  const one = (x) => String(Number(x.toFixed(1))) 
+  const one = (x) => String(Number(x.toFixed(1)))
   if (n < 1e3) return String(Math.round(n)) + ' tok'
   if (n < 1e6 && Math.round(n / 1e3) < 1e3) return (n < 1e4 ? one(n / 1e3) : String(Math.round(n / 1e3))) + 'K tok'
   return one(n / 1e6) + 'M tok'
@@ -76,7 +76,7 @@ export function tokenSize(n) {
 
 export function percent(p) {
   if (!isNum(p)) return '?%'
-  return String(Math.round(p)) + '%' 
+  return String(Math.round(p)) + '%'
 }
 
 export function hours(h) {
@@ -204,6 +204,13 @@ export function stamp(ms) {
 
 
 
+export const SAVINGS_NOTE = 'Est. savings compare the same token usage at your starting model with measured API-equivalent spend. Your actual subscription bill may differ.'
+
+export function estimatedSavingsText(value, money = measuredDollars) {
+  const amount = isNum(value) ? money(value).replace(/^-/, '') : 'n/a'
+  return (isNum(value) && value < 0 && amount !== '$0.00' ? 'Est. extra cost ' : 'Est. saved ') + amount + ' (API-eq.)'
+}
+
 
 export function measuredDollars(value) {
   if (!isNum(value)) return 'n/a'
@@ -237,7 +244,7 @@ export function workingBand(b) {
   let first = 'this prompt ' + paid + floor + ' so far (' + SHORT_LABEL + ')'
   const calls = plural(b.k, 'call', 'calls')
   const width = isNum(b.columns) && b.columns > 20 ? b.columns - 3 : 100
-  
+
   if (first.length > width) first = first.split(SEP)[0]
   if (first.length > width) first = first.replace(' so far', '')
   const all = [first, calls].join(SEP)
@@ -296,8 +303,8 @@ export function sessionParts(s) {
   const five = limits.find((l) => l && l.kind === 'five_hour')
   const week = limits.find((l) => l && l.kind === 'seven_day')
   const wide = isNum(s.columns) && s.columns >= 130
-  
-  
+
+
   if (five && isNum(five.percentUsed)) {
     if (windowReset(five.resetsAt, s.nowMs).passed) out.limits.push('5-hour ' + WINDOW_RESET)
     else {

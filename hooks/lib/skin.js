@@ -6,7 +6,7 @@ import { FORCE_SERVER } from './runtime_mode.js'
 
 
 import { shortModel, fit, fitChunks, fitText, joinGroups, rowWidth, bandModel, paneTabs, sessionCostLines, planPauseLine, cacheStayText, measuredCostLines } from './ui.js'
-import { sessionParts, promptParts, measuredDollars, measuredSpendLine, totalIsFloor, floorNotes, usd, percent, plural, count, resetText, stamp, hours, tokenSize, LABEL, noUsageLine, limitPlanLines, familyLimitLine, LIMIT_SETTINGS_TEXT, PLAN_TYPE_CHOICES, PLAN_TIER_CHOICES, FABLE_BILLING_CHOICES, authKindLine, receiptBillingTurn, receiptBillingTotals, windowReset, WINDOW_RESET } from './format.js'
+import { sessionParts, promptParts, estimatedSavingsText, SAVINGS_NOTE, measuredDollars, measuredSpendLine, totalIsFloor, floorNotes, usd, percent, plural, count, resetText, stamp, hours, tokenSize, LABEL, noUsageLine, limitPlanLines, familyLimitLine, LIMIT_SETTINGS_TEXT, PLAN_TYPE_CHOICES, PLAN_TIER_CHOICES, FABLE_BILLING_CHOICES, authKindLine, receiptBillingTurn, receiptBillingTotals, windowReset, WINDOW_RESET } from './format.js'
 import { modelFamily } from './limits.js'
 import { FORECAST_TEXT } from './server_forecast.js'
 import { cacheClock } from './view_model.js'
@@ -38,7 +38,7 @@ export const PRODUCT_VERSION = '1.1.0'
 
 export const WORDS = {
   product: 'IQ Code',
-  glyph: '◆', 
+  glyph: '◆',
   routed: 'routed',
   notRouted: 'not routed',
   cacheLeft: 'cache',
@@ -134,8 +134,8 @@ function clockText(ms) {
 
 
 export const HEAT_WORDS = ['heat low', 'heat med', 'heat high', 'heat very high', 'heat max']
-export const HEAT_FROM_ADDED = [0, 60000, 100000, 150000, 250000] 
-export const COOLER_UNDER = 5 
+export const HEAT_FROM_ADDED = [0, 60000, 100000, 150000, 250000]
+export const COOLER_UNDER = 5
 export function cacheHeat(c) {
   if (!c) return null
   if (c.state === 'unknown') return null
@@ -186,7 +186,7 @@ export function sessionCostChunk(meter) {
   if (!measured) return null
   const money = measuredDollars
   const fraction = isNum(measured.percent) ? ' (' + Math.round(measured.percent) + '%)' : ''
-  return { text: 'this session: ' + money(measured.paid_usd) + (isNum(measured.paid_usd) && measured.paid_complete === false ? '+' : '') + ' spent' + SEP + 'saved ' + money(measured.saved_usd) + fraction, style: isNum(measured.saved_usd) && measured.saved_usd < 0 ? 'warn' : 'plain' }
+  return { text: 'this session: ' + money(measured.paid_usd) + (isNum(measured.paid_usd) && measured.paid_complete === false ? '+' : '') + ' spent' + SEP + estimatedSavingsText(measured.saved_usd) + fraction, style: isNum(measured.saved_usd) && measured.saved_usd < 0 ? 'warn' : 'plain' }
 }
 
 function etaText(hitAt, nowMs) {
@@ -212,7 +212,7 @@ export function planChunk(view, nowMs) {
   if (facts ? facts.billing_mode === 'api' : SAVINGS_MODES_ENABLED && view && view.savings && view.savings.planType === 'api') return null
   const p = view && view.plan
   const ended = planEnded(view, nowMs)
-  
+
   const shown = (kind, reading, finished) => {
     if (facts) {
       const live = (facts.rows || []).find((row) => row.kind === kind)?.percent_used
@@ -226,7 +226,7 @@ export function planChunk(view, nowMs) {
     const pct = shown(kind, reading, finished)
     if (isNum(pct)) {
       parts.push(label + ' ' + percent(pct))
-      if (Math.round(pct) >= 80) hot = true 
+      if (Math.round(pct) >= 80) hot = true
     } else if (finished) parts.push(label + ' ' + WINDOW_RESET)
   }
   if (parts.length === 0) return null
@@ -259,7 +259,7 @@ export function nextPlanReset(view, nowMs) {
 export function budgetChunk(view) {
   const b = view && view.budget
   if (!b || b.status === 'none' || !b.status || !isNum(b.limit)) return null
-  const spent = b.unit === 'plan_pct' ? (isNum(b.spentPct) ? percent(Math.round(b.spentPct)) : null) : usd(b.spentUsd) + (b.spentFloor === true ? '+' : '') 
+  const spent = b.unit === 'plan_pct' ? (isNum(b.spentPct) ? percent(Math.round(b.spentPct)) : null) : usd(b.spentUsd) + (b.spentFloor === true ? '+' : '')
   if (spent === null) return null
   const of = b.unit === 'plan_pct' ? percent(b.limit) : usd(b.limit) + ' (' + SHORT + ')'
   let text = 'budget ' + spent + ' of ' + of
@@ -300,9 +300,9 @@ function legacySessionForecast(view, opts) {
   const fc = view && view.forecast
   if (!fc || fc.source !== 'server') return null
   if (fc.state === 'available' && isNum(fc.totalQ50Usd)) {
-    
+
     if (opts && isNum(opts.spentUsd) && Math.round(fc.totalQ50Usd * 100) < Math.round(opts.spentUsd * 100)) return null
-    
+
     if (opts && isNum(opts.advisorUnpriced) && opts.advisorUnpriced > 0) return null
     return { text: 'This session: rough est. total ' + usd(fc.totalQ50Usd) + ' (API-equivalent)', style: fc.pending ? 'dim' : 'plain' }
   }
@@ -415,7 +415,7 @@ function homeTab(a) {
   if (counts) add('plain', plural(counts.promptsRated ?? ((counts.routed || 0) + (counts.kept || 0)), 'prompt', 'prompts') + ' rated' + SEP + plural(counts.subagentsRated || 0, 'subagent', 'subagents') + ' rated')
   if (m?.session?.measured) {
     add('plain', measuredSpendLine(m.session.measured) + ' (' + SHORT + ')')
-    add(m.session.measured.saved_usd < 0 ? 'warn' : 'plain', 'Saved ' + measuredDollars(m.session.measured.saved_usd) + ' (' + SHORT + ')')
+    add(m.session.measured.saved_usd < 0 ? 'warn' : 'plain', estimatedSavingsText(m.session.measured.saved_usd))
   } else if (m && m.session && isNum(m.session.calls) && m.session.calls > 0) {
     add('plain', usd(m.session.usd) + (totalIsFloor(m.session) ? '+' : '') + ' (' + SHORT + ')' + SEP + plural(m.session.calls, 'call', 'calls') + (isNum(m.session.active_hours) && m.session.active_hours >= 0.02 ? SEP + hours(m.session.active_hours) + ' active' : ''))
     for (const note of floorNotes(m.session)) add('dim', note)
@@ -424,8 +424,9 @@ function homeTab(a) {
     const parts = m?.session ? sessionParts({ ...m.session, activeHours: m.session.active_hours, columns: 400 }) : null
     if (parts?.rate) add('plain', 'Pace: ' + parts.rate + ' (' + SHORT + ')')
     const saved = r?.session?.est_saved_usd
-    add('plain', 'Saved ' + (isNum(saved) ? (saved < 0 ? '-' : '') + usd(saved) + ' est.' : 'n/a') + ' (' + SHORT + ')')
+    add('plain', estimatedSavingsText(saved, usd))
   }
+  add('dim', SAVINGS_NOTE)
   if (r?.usage) add('plain', 'Routing decisions this month: ' + count(r.usage.decisions) + ' of ' + count(r.usage.allowance) + '.')
   const tag = tagOf(v && v.served)
   if (tag) add('plain', 'Serving: ' + tag + (isRouted(v) === null ? '' : SEP + (isRouted(v) ? WORDS.routed : WORDS.notRouted)))
@@ -469,8 +470,8 @@ function routingLines(a, tabs) {
     L.push({ style: 'dim', text: r.subagentsOn === true ? 'Subagent routing is on (subagent tasks are rated while routing is on). /iq-route subagents off stops it for this session.' : 'Subagent routing is off for this session (subagent tasks are not rated while routing is on). /iq-route subagents on turns it back on.' })
   }
   blank()
-  L.push({ style: 'head', text: 'History' + SEP + 'main thread, subagents, advisors' })
-  if (!a.meter?.session?.measured && r && isNum(r.estSavedUsdTotal)) L.push({ style: r.estSavedUsdTotal > 0 ? 'route_down' : 'plain', text: 'Running total: ' + (r.estSavedUsdTotal < 0 ? 'est. extra ' : 'est. saved ') + usd(Math.abs(r.estSavedUsdTotal)) + ' (' + SHORT + ')' })
+  L.push({ style: 'head', text: 'History' + SEP + 'main thread and subagents' })
+  if (!a.meter?.session?.measured && r && isNum(r.estSavedUsdTotal)) L.push({ style: r.estSavedUsdTotal > 0 ? 'route_down' : 'plain', text: 'Running total: ' + estimatedSavingsText(r.estSavedUsdTotal, usd) })
   const hist = r && Array.isArray(r.history) ? r.history.slice(-14).reverse() : []
   if (hist.length === 0) L.push({ style: 'dim', text: 'No routing decisions yet this session.' })
   else {
@@ -489,7 +490,7 @@ function planLines(a, tabs) {
   const facts = LIMIT_AWARE_ENABLED && a.view && a.view.limitFacts
   const ended = planEnded(a.view, a.nowMs)
   if (facts) {
-    
+
     const finished = [ended.five && 'five_hour', ended.week && 'seven_day'].filter(Boolean)
     const lines = [{ style: 'title', text: 'Plan' }, ...limitPlanLines(facts, finished).map((text) => ({
       style: text.startsWith('No Claude usage left') ? 'warn' : 'plain', text,
@@ -501,7 +502,7 @@ function planLines(a, tabs) {
       if (mode.dollarLine) lines.push({ style: 'dim', text: mode.dollarLine })
       if (mode.explanation) lines.push({ style: 'dim', text: mode.explanation })
     }
-    
+
     const graph = tabs[2].lines.findIndex((line) => line.text && line.text.startsWith('Dollars per prompt this session'))
     if (graph >= 0) lines.push({ style: 'plain', text: ' ' }, ...tabs[2].lines.slice(graph))
     return lines
@@ -558,10 +559,11 @@ function settingsTab(a) {
       key: 'fable-billing-' + value, label: ((s.fableBilling || 'auto') === value ? '● ' : '') + label, do: { kind: 'set', key: 'fableBilling', value },
     })) })
   }
+  add('plain', 'Share usage facts: ' + (s.usageReporting === 'off' ? 'off' : 'on'))
+  L.push({ controls: [['on', 'On', 's'], ['off', 'Off', 'n']].map(([value, label, hotkey]) => ({ key: 'usage-reporting-' + value,
+    label: ((s.usageReporting === 'off' ? 'off' : 'on') === value ? '● ' : '') + label, hotkey, do: { kind: 'set', key: 'usageReporting', value } })) })
+  add('dim', 'Lets IQ keep derived numbers about routed requests (no prompt text). Turn off any time.')
   if (USAGE_REPORTS_ENABLED) {
-    add('plain', 'Usage reporting')
-    L.push({ controls: [['on', 'On'], ['off', 'Off']].map(([value, label]) => ({ key: 'usage-reporting-' + value,
-      label: (s.usageReporting === value ? '● ' : '') + label, do: { kind: 'set', key: 'usageReporting', value } })) })
     add('dim', a.view && a.view.savings && a.view.savings.reportingActive ? 'Usage reporting is on while routing is on.' : 'Usage reporting is off on this device.')
   }
   const on = (b) => (b ? 'on' : 'off')
@@ -598,6 +600,7 @@ function settingsTab(a) {
     add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time and token-count facts.')
     add('dim', BRIEF_NOTE)
   }
+  add('dim', 'IQ may send a short prompt or task excerpt to OpenAI to rate it. Some requests skip this step. See iq-routing.com/privacy for retention and provider terms.')
   if (dashboardAvailable) add('dim', 'Your IQ key reads session defaults even with routing off. Settings requests send no prompt content.')
   add('dim', 'Routing needs your IQ key and Personal ($6/month) or higher, and stays on until /iq-route off.')
 
@@ -611,7 +614,7 @@ export function skinTabs(a) {
   const base = paneTabs({ meter: a.meter, routing: a.routingState, read: a.read, surface: a.surface, columns: a.columns, nowMs: a.nowMs }).tabs
   const forecast = forecastChunk(a.view, a.meter)
   const session = a.meter && a.meter.session
-  
+
   const cc = cacheChunk(a.view, a.nowMs)
   const clock = cacheClock(a.view && a.view.cache, a.nowMs)
   const began = clock && clock.startTokens !== null && clock.addedTokens !== null ? WORDS.cacheStarted + ' ' + tokenSize(clock.startTokens) + SEP + tokenSize(clock.addedTokens) + ' ' + WORDS.cacheAdded : null

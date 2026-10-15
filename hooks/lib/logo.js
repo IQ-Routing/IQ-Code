@@ -2,9 +2,9 @@
 
 
 
-export const MAX_FPS = 10 
-export const MAX_SVG_FPS = 8 
-export const TEXT_MARK = 'IQ' 
+export const MAX_FPS = 10
+export const MAX_SVG_FPS = 8
+export const TEXT_MARK = 'IQ'
 
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x)
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/

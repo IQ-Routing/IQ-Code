@@ -28,12 +28,12 @@ export async function routeFetch({ fetch, later, now }, req, deadlineMs) {
       try { Promise.resolve(now()).then((endedMs) => complete(response, endedMs, error), () => complete(response, startedMs, error)) }
       catch (_) { complete(response, startedMs, error) }
     }
-    
-    
+
+
     try { timer = later(remainingMs, () => complete(null, scheduling ? startedMs : deadlineMs)) }
     catch (error) { complete(null, startedMs, error); return }
     scheduling = false
-    
+
     if (settled || finishing) { if (settled) cancelTimer(); return }
     try {
       Promise.resolve(fetch(req.url, req.init)).then((response) => finish(response), (error) => finish(null, error))

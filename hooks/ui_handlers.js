@@ -63,12 +63,12 @@ function pathIn(base, ...parts) {
     String(part).replace(/^[\\/]+|[\\/]+$/g, '').replace(/[\\/]+/g, sep)).join(sep)
 }
 
-setStateModule(STATE) 
+setStateModule(STATE)
 
-const SETTINGS_PATH = '/.claude/iq/settings.json' 
-const UI_STATE_PATH = '/.claude/iq/ui_state.json' 
+const SETTINGS_PATH = '/.claude/iq/settings.json'
+const UI_STATE_PATH = '/.claude/iq/ui_state.json'
 const STAMP_CAP = 400
-const HOME_LOOPS = 3 
+const HOME_LOOPS = 3
 const PLAN_CAP = 60
 
 const STYLE = {
@@ -84,27 +84,27 @@ const STYLE = {
   route_wait: { dimColor: true },
 }
 
-let H = null 
-let U = newUi() 
+let H = null
+let U = newUi()
 
 function newUi() {
   return {
-    frames: null, 
+    frames: null,
     settings: { ...DEFAULT_SETTINGS },
-    ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false }, 
-    onboarded: null, 
+    ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false },
+    onboarded: null,
     home: null,
-    plan: { five_hour: [], seven_day: [] }, 
-    stamps: new Map(), 
+    plan: { five_hour: [], seven_day: [] },
+    stamps: new Map(),
     lastTag: null,
-    timers: new Map(), 
-    svgFrames: new Map(), 
-    finished: new Set(), 
-    cardNodes: new Map(), 
-    loading: null, 
+    timers: new Map(),
+    svgFrames: new Map(),
+    finished: new Set(),
+    cardNodes: new Map(),
+    loading: null,
     errors: 0,
     quiet: false,
-    feedback: null, 
+    feedback: null,
     receipt: null,
   }
 }
@@ -234,7 +234,7 @@ export function uiReset() {
     stopAll()
     U = newUi()
   } catch (_) {
-    
+
   }
 }
 
@@ -242,7 +242,7 @@ export function uiTurnDone() {
   try {
     stopSpinners()
   } catch (_) {
-    
+
   }
 }
 
@@ -250,7 +250,7 @@ export function uiEnd() {
   try {
     stopAll()
   } catch (_) {
-    
+
   }
 }
 
@@ -271,12 +271,12 @@ async function uiStart($) {
   U.home = await userHome($)
   const root = $.plugin.root
   const text = await safe($.fs.read(pathIn(root, 'data/logo_frames.json')))
-  U.frames = typeof text === 'string' ? parseFrames(text) : null 
+  U.frames = typeof text === 'string' ? parseFrames(text) : null
   U.ttl = await readTtl($)
   if (U.home) {
-    U.settings = cleanSettings(STATE.getView().settings) 
+    U.settings = cleanSettings(STATE.getView().settings)
     const st = await readJson($, pathIn(U.home, UI_STATE_PATH), true)
-    U.onboarded = st === undefined ? false : st === null ? true : st.onboarded === true 
+    U.onboarded = st === undefined ? false : st === null ? true : st.onboarded === true
   }
 }
 
@@ -332,7 +332,7 @@ function cancelTimer(t) {
     else if (t && typeof t.cancel === 'function') t.cancel()
     else if (t && typeof t.then === 'function') t.then(cancelTimer, () => {})
   } catch (_) {
-    
+
   }
 }
 
@@ -360,7 +360,7 @@ function stopAll() {
 
 const UI_LOG = '/.claude/iq/ui/errors.log'
 const UI_LOG_CAP = 24 * 1024
-const UI_MAX_ERRORS = 5 
+const UI_MAX_ERRORS = 5
 
 async function noteError($, where, err) {
   U.errors += 1
@@ -382,7 +382,7 @@ async function noteError($, where, err) {
     text = scrub(text + line, [key, H && H.pluginKey ? H.pluginKey() : undefined]).slice(-UI_LOG_CAP)
     await $.fs.write(path, text)
   } catch (_) {
-    
+
   }
 }
 
@@ -392,7 +392,7 @@ function say($, text) {
   try {
     void safe($.ui.log(displayText(text)))
   } catch (_) {
-    
+
   }
 }
 
@@ -418,7 +418,11 @@ async function persistSetting($, key, value) {
     read: (path) => $.fs.read(path), write: (path, text) => $.fs.write(path, text), run: (argv, init) => $.process.run(argv, init) }
   const home = await trustedSettingsHome(io)
   const patch = { [key]: cleaned[key], ...(key === 'keepRoutingOn' && cleaned[key] === true ? { routingEligible: true } : {}) }
-  if (home) await STATE.saveSettings(patch, (text, patch) => writeTrustedSettings(io, text, patch))
+  const saved = home ? await STATE.saveSettings(patch, (text, patch) => writeTrustedSettings(io, text, patch)) : false
+  if (key === 'usageReporting') {
+    U.sharingSaveFailed = !saved && cleaned[key] === 'off'
+    if (U.sharingSaveFailed) STATE.keepUsageReportingOffForSession()
+  }
   U.settings = cleanSettings(STATE.getView().settings)
   if (LIMIT_AWARE_ENABLED && ['planType', 'planTier', 'allowFable', 'fableBilling'].includes(key) && typeof H.refreshLimits === 'function') await H.refreshLimits(limitAccess($))
 
@@ -433,10 +437,10 @@ async function markOnboarded($) {
 async function doControl($, d) {
   try {
     if (d.kind === 'set') await persistSetting($, d.key, d.value)
-    else if (d.kind === 'routing' && typeof H.setRouting === 'function') say($, await H.setRouting(d.value)) 
+    else if (d.kind === 'routing' && typeof H.setRouting === 'function') say($, await H.setRouting(d.value))
     else if (d.kind === 'onboarded') await markOnboarded($)
     else if (d.kind === 'receipt') await onReceipt($)
-    if (d.kind === 'set' && d.key === 'animation' && d.value === false) stopMarks() 
+    if (d.kind === 'set' && d.key === 'animation' && d.value === false) stopMarks()
   } catch (err) {
     await noteError($, 'ui.press', err)
   }
@@ -451,7 +455,7 @@ function notePlan(nowMs) {
   if (!Array.isArray(lim)) return
   for (const l of lim) {
     if (!l || (l.kind !== 'five_hour' && l.kind !== 'seven_day') || typeof l.percentUsed !== 'number') continue
-    if (windowReset(l.resetsAt, nowMs).passed) continue 
+    if (windowReset(l.resetsAt, nowMs).passed) continue
     const arr = U.plan[l.kind]
     const last = arr[arr.length - 1]
     if (!last || last.pct !== l.percentUsed || nowMs - last.t >= 60000) {
@@ -541,7 +545,7 @@ async function drawSpinner($, e, next) {
     const flag = e.surface === 'desktop' && Svg && U.frames
       ? Svg({ source: svgFrameAt(U.frames, animate ? U.svgFrames.get(id) ?? 0 : -1), alt: 'IQ Code is working', width: 28, height: 28, isInteractive: false })
       : Text({ bold: true, color: 'claude', children: TEXT_MARK })
-    
+
     return Box({ flexDirection: 'row', columnGap: 1, children: [Box({ key: 'iq-spin-flag', children: [flag] }), line] })
   }
   const engine = await next(e)
@@ -549,7 +553,7 @@ async function drawSpinner($, e, next) {
   const mark = f
     ? Raster({ key: 'iq-spin', columns: f.columns, rows: f.rows, cells: f.cells })
     : Text({ bold: true, color: 'claude', children: TEXT_MARK })
-  if (f && H.working()) startMarkTimer($, e.requestId, 'iq-spin', 'sm') 
+  if (f && H.working()) startMarkTimer($, e.requestId, 'iq-spin', 'sm')
   const body = Box({ flexDirection: 'column', children: [engine, Text({ dimColor: true, children: displayText(status) })] })
   return Box({ flexDirection: 'row', columnGap: 1, children: [mark, body] })
 }
@@ -563,7 +567,7 @@ function startMarkTimer($, requestId, key, size) {
   const timer = $.clock.every(frameMs(U.frames), async () => {
     i += 1
     if (i >= limit) {
-      
+
       stopTimer(id)
       U.finished.add(id)
       const rest = frameAt(U.frames, size, -1)
@@ -572,14 +576,14 @@ function startMarkTimer($, requestId, key, size) {
     }
     const f = frameAt(U.frames, size, i)
     const res = f ? await safe($.ui.blit({ requestId, key, cells: f.cells })) : { deny: 'no frame' }
-    if (!res || res.deny) stopTimer(id) 
+    if (!res || res.deny) stopTimer(id)
   })
   U.timers.set(id, timer)
 }
 
 
 function startSvgTimer($, requestId, key) {
-  const id = 'svg/' + requestId + '/' + key 
+  const id = 'svg/' + requestId + '/' + key
   const frames = U.frames && U.frames.svg.frames
   if (U.timers.has(id) || U.finished.has(id) || !Array.isArray(frames) || !frames.length || U.settings.animation === false) return
   let i = 0
@@ -620,8 +624,8 @@ function stampFor(requestId, kind, p, nowMs) {
 async function drawCard($, e, next, kind) {
   if (!H.interactive() || U.quiet) return next(e)
   await ensureLoaded($)
-  
-  
+
+
   const props = e.props && typeof e.props === 'object' ? e.props : null
   const cols = props && typeof props.bodyColumns === 'number' ? props.bodyColumns : e.viewport && typeof e.viewport.columns === 'number' ? e.viewport.columns : 0
   const sig = props !== null ? propsSig(props) : null
@@ -703,7 +707,7 @@ async function onIq($, e) {
   const tab = typeof e.args === 'string' ? e.args.trim().toLowerCase() : ''
   H.tab.set((LIMIT_AWARE_ENABLED || KEEP_ROUTING_ON_ENABLED) && ['home', 'routing', 'cost', 'plan', 'settings'].includes(tab) ? tab : 'home')
   stopTimer('iq/iq-home')
-  U.finished.delete('iq/iq-home') 
+  U.finished.delete('iq/iq-home')
   stopTimer('svg/iq/iq-home')
   U.finished.delete('svg/iq/iq-home')
   const opened = await $.ui.open({ id: 'iq', title: 'IQ', focus: true, closeOnEscape: true })
@@ -761,6 +765,7 @@ async function drawPane($, e, next) {
 
   })
   if (!model || !Array.isArray(model.tabs)) return next(e)
+  if (U.sharingSaveFailed) model.tabs.find((tab) => tab.id === 'settings').lines.push({ style: 'dim', text: 'Could not save. Share usage facts is off for this session only.' })
   const open = model.tabs.find((t) => t.id === H.tab.get()) || model.tabs[0]
   const row = Box({
     flexDirection: 'row',

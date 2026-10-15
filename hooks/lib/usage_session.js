@@ -73,7 +73,7 @@ export function newUsageSession(report = null) {
       cacheWriteTokens: integer(u.cache_creation_input_tokens) ? u.cache_creation_input_tokens : 0,
     }
     const actualUsd = normalized !== 'unknown' && price && price.priced && finite(price.usd) ? price.usd : null
-    
+
     const modeKnown = suppliedMode !== undefined || explicitBillingMode
     const unknownFable = !modeKnown && d.planType === 'subscription' && normalized.startsWith('claude-fable-')
     const billingMode = suppliedMode !== undefined ? validMode(suppliedMode) ? suppliedMode : 'unknown' :
@@ -82,7 +82,7 @@ export function newUsageSession(report = null) {
     activeBillingMode = billingMode
     lastTurnBillingMode = billingMode
     activeCreditBilledFamily = creditMode(billingMode) && (creditBilledFamily === 'fable' || normalized.startsWith('claude-fable-')) ? 'fable' : null
-    
+
     if (billingMode === 'subscription' || billingMode === 'api') d.planType = billingMode
     const tags = limits.observe({ actualUsd, complete, billingMode })
     const fact = { model: normalized, actualUsd, complete, tokens, pricing, changed, detector: d,
@@ -128,8 +128,8 @@ export function newUsageSession(report = null) {
   }
   function skipNoUsage({ at, billingMode = activeBillingMode, familiesExhaustedCount = 0, reportEligible = false, setting = 'auto' } = {}) {
     receipt.skipNoUsage()
-    
-    
+
+
     if (!report || !reportEligible || !finite(at)) return
     const mode = billingMode === 'subscription' ? 'subscription' : 'unknown'
     detector.override(setting)
@@ -170,8 +170,8 @@ export function newUsageSession(report = null) {
       const viewAt = finite(nowMs) ? nowMs : latestAt
       const snapshot = limits.snapshot(viewAt)
       rememberPlan(viewAt)
-      
-      
+
+
       if (creditMode(activeBillingMode) && finite(viewAt)) for (const kind of ['five_hour', 'seven_day']) {
         const prior = lastPlanWindows.get(kind)
         if (!prior || !finite(prior.expiresAt) || prior.expiresAt <= viewAt) continue

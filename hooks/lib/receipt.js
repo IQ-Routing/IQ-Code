@@ -23,7 +23,7 @@ export const RECEIPT_EXPLANATION = "Limit savings describe the current reported 
 
 function closedModel(value) {
   if (typeof value !== 'string') return 'unknown'
-  
+
   const alias = value.startsWith('anthropic/') ? value.slice(10) : value
   const id = alias === 'claude-haiku-4-5-20251001' ? 'claude-haiku-4-5' : alias
   return Object.hasOwn(MODEL_LABELS, id) ? id : 'unknown'
@@ -144,7 +144,7 @@ export function newReceipt() {
       const saved = eligible && savedKnown ? namedUsd - actualUsd : 0
       if (eligible) row.eligibleCalls += 1
       row.saved += saved; row.known = row.known && savedKnown && Number.isFinite(row.saved)
-      
+
       billingTurns.push({ index: count(observation.index) || billingTurns.length + 1, model, billingMode: mode,
         saved, known: savedKnown, weeklyWindow: typeof observation.weeklyWindow === 'number' && Number.isFinite(observation.weeklyWindow) ? observation.weeklyWindow : null,
         fiveHourWindow: typeof observation.fiveHourWindow === 'number' && Number.isFinite(observation.fiveHourWindow) ? observation.fiveHourWindow : null })

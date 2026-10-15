@@ -5,7 +5,7 @@ import { registerThinSubagents } from './thin_subagent_handlers.js'
 import * as State from './lib/state.js'
 import { FORCE_SERVER } from './lib/runtime_mode.js'
 import { newForecastClient, FORECAST_TEXT } from './lib/server_forecast.js'
-import { effortLabel, familyOf, canonicalModel } from './lib/models.js'
+import { effortLabel, canonicalModel } from './lib/models.js'
 import { readKey, trafficOff, homeFrom } from './lib/traffic.js'
 import { destinationFrom, isFreePlan } from './lib/iq_client.js'
 import { statusOf } from './lib/router.js'
@@ -55,13 +55,12 @@ let ended = false
 let lifecycle = 'initial'
 let limit = null
 let taskStartUsd = 0
-let taskStartMissed = 0 
+let taskStartMissed = 0
 let budgetUnit = 'usd'
 let budgetExplicit = false
 let taskPct = { last: null, spent: 0 }
 let answerState = { state: 'unavailable', reasonCode: 'estimate_pending_first_call', pending: false }
 let helpersSeen = new Set()
-let spawnExpectedUsd = null
 let aliasNoticeShown = false
 
 export function cancelRouteWork() {
@@ -92,7 +91,7 @@ function publishState(answer) {
     taskPct.last = window.percentUsed
   }
   const budgetSpent = budgetUnit === 'plan_pct' ? taskPct.spent : spent
-  
+
   const status = limit === null ? 'none' : budgetSpent === null ? 'unavailable' : budgetSpent >= limit ? 'over' : budgetSpent >= 0.8 * limit ? 'at_risk' : 'ok'
   State.update(sid, { forecast: { source: 'server', state: answerState.state, reasonCode: answerState.reasonCode, pending: answerState.pending, text: FORECAST_TEXT[answerState.state] || null, totalQ50Usd: fc ? fc.total_q50_usd : null, remainingQ50Usd: fc ? fc.remaining_q50_usd : null }, budget: { unit: limit === null ? null : budgetUnit, limit, spentUsd: limit === null ? ledgerUsd : spent, spentFloor, spentPct: budgetUnit === 'plan_pct' && taskPct.last !== null ? taskPct.spent : null, forecast: null, status, suggestion: null }, advisor: { reserveUsd: null }, context: { compactSuggest: null } })
 }
@@ -120,19 +119,18 @@ function reset($, sessionStart = false) {
   taskPct = { last: null, spent: 0 }
   taskStartUsd = 0
   taskStartMissed = 0
-  spawnExpectedUsd = null
   aliasNoticeShown = false
   const session = sid
   F = newForecastClient({ now: () => Math.max(C.getM().nowMs, Date.now()), later: (ms, fn) => $.clock.after(ms, fn), fetch: async (url, init) => {
-    
+
     if (sid !== session || !(await allowed($))) return null
     if (LIMIT_AWARE_ENABLED && C.refreshLimits) await C.refreshLimits(limitAccess($))
     const nowMs = await $.clock.now()
     if (sid !== session || ended || statusOf(C.getR(), nowMs) !== 'on' || LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(nowMs)) return null
     return $.http.fetch(url, init)
   }, onChange: (answer) => { if (!ended && enabled()) publish($, answer) } })
-  
-  
+
+
   State.resetSession(sid, !sessionStart)
   publish($)
 }
@@ -161,10 +159,10 @@ export function measureTaskBudget() {
 
 async function request($) {
   if (!enabled() || ended || !C.getM().ready) return
-  if (C.getT().measured) return 
+  if (C.getT().measured) return
   if (LIMIT_AWARE_ENABLED && C.refreshLimits) await C.refreshLimits(limitAccess($))
   if (LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(await $.clock.now())) { if (F) F.invalidate(); return }
-  
+
   if (isFreePlan(C.getR().plan || C.getR().usage)) {
     if (sid !== C.getM().sessionId || !F) reset($)
     F.invalidate('forecast_not_paid')
@@ -204,8 +202,6 @@ function schedule($) {
     void request($).catch(() => { if (client === F && session === C.getM().sessionId) client.invalidate() })
   })
 }
-export function latestSpawnPrice(agentType, modelAlias) { return enabled() && F ? F.price(agentType, modelAlias) : null }
-export function lastSpawnPrice() { return spawnExpectedUsd }
 export function registerRoute(on, ctx) {
   C = ctx
   registerThinSubagents(on, ctx, enabled)
@@ -234,8 +230,7 @@ export function registerRoute(on, ctx) {
   })
   on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
     if (!enabled()) return next(e)
-    
-    spawnExpectedUsd = latestSpawnPrice(e.subagentType, familyOf(e.model || e.parentModel))
+
     const session = sid, tracker = C.getT()
     const out = await next(e)
     if (enabled() && !ended && session === sid && tracker === C.getT()) {

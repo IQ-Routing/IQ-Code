@@ -35,7 +35,7 @@ export async function resolveClaudeExecutable(host) {
     '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe',
     '/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe'])
   if (platform === 'linux') return firstExisting(host, [pathIn(home, '.local/bin/claude'), '/usr/local/bin/claude', '/usr/bin/claude'])
-  
+
   if (platform === 'win32') return firstExisting(host, [pathIn(home, '.local/bin/claude.exe'),
     pathIn(home, 'AppData/Local/Microsoft/WinGet/Links/claude.exe')])
   return null

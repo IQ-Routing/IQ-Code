@@ -49,15 +49,16 @@ import {
   isHumanKind,
   sessionMeter,
 } from './lib/tracker.js'
-import { measuredSpendLine, measuredDollars, NOTICE, noUsageLine } from './lib/format.js'
+import { measuredSpendLine, estimatedSavingsText, SAVINGS_NOTE, NOTICE, noUsageLine } from './lib/format.js'
 import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, errText, tailLines, mergeRows } from './lib/util.js'
 import { meterView, noteSeries } from './lib/meterview.js'
 import { trivialTurn } from './lib/trivial_turn.js'
 import { measureCall, rebuildDebit } from './lib/measured_cost.js'
 import { routeFetch } from './lib/route_transport.js'
-import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js' 
+import { applyDataFeaturesPreference } from './lib/iq_client.js'
+import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
 import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, scrub, cleanText, MAX_HISTORY_MESSAGES, displayText } from './lib/iq_client.js'
-import { readKey, validKey, trafficOff, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
+import { readKey, validKey, trafficOff, readUsageReporting, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
 import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
 import { registerAuth, authReset, authEnd, authOff, authCancel } from './auth_handlers.js'
 import { guessEffort, sameModel, sameChoice, canonicalModel, effortFacts, explicitModel, applicableChoice, applyChoice, effortLabel, EFFORTS, validateAnswer } from './lib/models.js'
@@ -139,52 +140,52 @@ function iqAccess($) {
 
 const serverMode = () => FORCE_SERVER
 
-let T = newTracker() 
-let M = newMeter() 
-let R = newRouter() 
-let RM = newRuntime() 
+let T = newTracker()
+let M = newMeter()
+let R = newRouter()
+let RM = newRuntime()
 
 function newMeter() {
   return {
-    ready: false, 
-    off: null, 
+    ready: false,
+    off: null,
     tableHash: null,
     pricer: null,
     root: null,
     home: null,
     sessionId: null,
     startedMs: 0,
-    nowMs: 0, 
+    nowMs: 0,
     errors: 0,
     quiet: false,
-    sent: null, 
+    sent: null,
     usage: { rateLimits: [], contextTokens: undefined },
     lastPlan: '',
     read: { state: 'idle', data: null, note: '' },
-    tab: 'routing', 
-    series: [], 
+    tab: 'routing',
+    series: [],
     readEpoch: 0,
     epoch: 0,
-    boot: 'idle', 
+    boot: 'idle',
     bootAsOf: 0,
     effortTried: false,
-    interactive: false, 
-    endReason: null, 
-    provisionalKnown: false, 
+    interactive: false,
+    endReason: null,
+    provisionalKnown: false,
     chain: Promise.resolve(),
     errChain: Promise.resolve(),
-    errQueue: [], 
+    errQueue: [],
   }
 }
 
 function newRuntime() {
   return {
-    ready: false, 
+    ready: false,
     pricer: null,
     root: null,
     home: null,
     cwd: null,
-    nowMs: 0, 
+    nowMs: 0,
     explicitEffort: null,
     explicitModel: null,
     modelSource: null,
@@ -192,14 +193,14 @@ function newRuntime() {
     effortEpoch: 0,
     carryEffort: null,
     requestEpoch: 0,
-    planProbe: null, 
-    typedPrompts: [], 
-    pending: null, 
-    byTurn: new Map(), 
-    turnSteps: new Map(), 
-    chain: Promise.resolve(), 
+    planProbe: null,
+    typedPrompts: [],
+    pending: null,
+    byTurn: new Map(),
+    turnSteps: new Map(),
+    chain: Promise.resolve(),
     errChain: Promise.resolve(),
-    errQueue: [], 
+    errQueue: [],
     day: '',
     part: 0,
     ttl: { force5m: false, envTtl: '', settingTtl: '', enable1h: false },
@@ -232,7 +233,7 @@ function scheduleSessionDefaults($) {
       if (!key) return
       const destination = destinationFrom(await safe($.settings.read({ source: 'user' })))
       if (SD === record && record.sid === M.sessionId) record.client.request({ ...destination, key })
-    })().catch(() => {}) 
+    })().catch(() => {})
   })
 }
 
@@ -244,7 +245,7 @@ function prepareSessionDefaults($) {
 
 let usageReport = null
 let usageSession = newUsageSession()
-let usageIdentity = null 
+let usageIdentity = null
 let usageNoUsagePause = false
 let usageHelpers = new Map()
 let limitState = newLimitState()
@@ -301,7 +302,7 @@ async function refreshLimitFacts(access) {
   const auth = await readLimitAuth(access)
   const observed = await safe(access.usage())
   const nowMs = await access.now()
-  
+
   if (state !== limitState || version !== limitObservationVersion || sequence < limitAppliedRefresh) return currentLimits(nowMs)
   limitAppliedRefresh = sequence
   limitAuthKind = auth.kind
@@ -331,7 +332,7 @@ async function flushLimitSettings($) {
 function skippedNoUsage(nowMs) {
   if (!LIMIT_AWARE_ENABLED) return false
   const notice = limitState.notice(nowMs)
-  
+
   const facts = currentLimits(nowMs)
   usageSession.skipNoUsage({ at: nowMs, billingMode: facts.billing_mode, familiesExhaustedCount: facts.exhausted_families.length,
     reportEligible: USAGE_REPORTS_ENABLED && State.getSetting('usageReporting') === 'on' && State.getSetting('authBlocked') !== true && !!usageIdentity?.paid,
@@ -425,17 +426,17 @@ export function register(on, options = {}) {
   const configuredKey = options.iq_api_key
   credentials = credentialAccess(configuredKey)
   pluginKey = () => State.getSetting('authBlocked') === true ? LOGGED_OUT_KEY : credentials.read()
-  
+
   registerRoute(on, { getR: () => R, getRM: () => RM, getM: () => M, getT: () => T, pluginKey,
     limitState: currentLimits, refreshLimits: refreshLimitFacts, noUsage, noteNoUsage,
     noteUsageEntitlement: (key, paid) => usageEntitlement(key, paid),
     writeSubagentDecision: (row, access) => rtAppendRows(access, [row], Date.parse(row.ts)),
     noteHelperPlan: (id, plan) => { if (SAVINGS_MODES_ENABLED || USAGE_REPORTS_ENABLED) { usageHelpers.set(id, { ...plan, prev: null }); if (usageHelpers.size > 128) usageHelpers.delete(usageHelpers.keys().next().value) } },
   })
-  
 
-  
-  
+
+
+
   on('session.start', async ($, e, next) => {
     if (LIMIT_AWARE_ENABLED) limitObservationVersion += 1
     R.armed = false
@@ -455,7 +456,7 @@ export function register(on, options = {}) {
     } catch (err) {
       await rtNoteError($, 'session.start', err)
     }
-    uiReset() 
+    uiReset()
     try { startSessionDefaults($) } catch (_) {}
     const result = await next(e)
     await flushLimitSettings($)
@@ -468,11 +469,11 @@ export function register(on, options = {}) {
     return result
   })
 
-  
-  
-  
+
+
+
   on('prompt.submit', async ($, e, next) => {
-    await safe(ensureInteractive($)) 
+    await safe(ensureInteractive($))
     if (LIMIT_AWARE_ENABLED) await safe(refreshLimits($))
     let sub = null
     if (M.ready && !M.quiet) {
@@ -493,7 +494,7 @@ export function register(on, options = {}) {
     try { result = await next(e) } catch (err) { if (rsub !== null) rtDropped(rsub); throw err }
     if (rsub !== null && result && result.drop !== undefined) {
       try {
-        rtDropped(rsub) 
+        rtDropped(rsub)
       } catch (err) {
         await rtNoteError($, 'prompt.submit', err)
       }
@@ -513,7 +514,7 @@ export function register(on, options = {}) {
     await flushErrors($)
     await flushLimitSettings($)
     return result
-  }).catch(($, e, next) => next(e)) 
+  }).catch(($, e, next) => next(e))
 
   on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
     const router = R
@@ -545,9 +546,9 @@ export function register(on, options = {}) {
     return result
   })
 
-  
-  
-  
+
+
+
   on('turn.step', async function* ($, e, next) {
     let begun = { e2: e, startMs: null, rec: null, namedOriginal: { model: e.model, effort: e.effort } }
     try {
@@ -563,7 +564,7 @@ export function register(on, options = {}) {
         countError($, 'turn.step', err)
       }
     }
-    
+
     if (begun.e2 !== e) {
       const nowMs = key !== null ? M.nowMs : RM.nowMs
       const reason = begun.rec?.carry ? carryReason(R, begun.rec.carry, nowMs, begun.carryFingerprint) : null
@@ -592,18 +593,18 @@ export function register(on, options = {}) {
         result = s.value
         finished = true
       } catch (err) {
-        finished = true 
+        finished = true
         if (started) throw err
         await rtNoteError($, 'turn.step.rewrite', err)
-        if (begun.rec !== null) settleRefused(R, begun.rec) 
+        if (begun.rec !== null) settleRefused(R, begun.rec)
         begun = { e2: e, startMs: begun.startMs, rec: begun.rec, namedOriginal: { model: e.model, effort: e.effort } }
         result = yield* next(e)
       } finally {
         if (!finished && stream !== null) {
           try {
-            await stream.return(undefined) 
+            await stream.return(undefined)
           } catch (_) {
-            
+
           }
         }
       }
@@ -644,27 +645,27 @@ export function register(on, options = {}) {
     }
     const result = await next(e)
     try {
-      await rtComplete($, e) 
+      await rtComplete($, e)
     } catch (err) {
       await rtNoteError($, 'turn.complete', err)
     }
-    uiTurnDone() 
+    uiTurnDone()
     if (M.ready && !M.quiet) {
       try {
-        await flushRows($, M.nowMs) 
+        await flushRows($, M.nowMs)
       } catch (err) {
         countError($, 'turn.complete', err)
       }
     }
     await flushErrors($)
     if (line === null || !M.interactive) return result
-    
+
     const inner = result && typeof result.text === 'string' && result.text !== e.answer && result.text !== '' ? result.text + '\n' : ''
     return { ...result, text: inner + line }
   })
 
-  
-  
+
+
   on('session.compact', { trigger: ['manual', 'auto', 'plugin'] }, async ($, e, next) => {
     const result = await next(e)
     try {
@@ -678,8 +679,8 @@ export function register(on, options = {}) {
     return result
   })
 
-  
-  
+
+
   on('session.compact', { trigger: ['manual', 'auto', 'plugin'] }, async ($, e, next) => {
     if (!e.agentId) clearRouteHold(R)
     return next(e)
@@ -725,11 +726,11 @@ export function register(on, options = {}) {
     return result
   })
 
-  
+
   on('session.end', async ($, e, next) => {
     sessionGeneration += 1
     authEnd()
-    
+
     R.armed = false
     RM.requestEpoch += 1
     if (SD) SD.client.end()
@@ -750,13 +751,13 @@ export function register(on, options = {}) {
     } catch (err) {
       await rtNoteError($, 'session.end', err)
     }
-    uiEnd() 
+    uiEnd()
     await flushErrors($)
     return next(e)
   })
 
-  
-  
+
+
   on('command.run', { command: 'cost-read' }, async ($, e, next) => {
     try {
       return await onCostRead($, e)
@@ -794,8 +795,8 @@ export function register(on, options = {}) {
 
   on('command.run', { command: 'model' }, async ($, e, next) => {
     const result = await next(e)
-    
-    
+
+
     return result
   })
 
@@ -854,7 +855,7 @@ export function register(on, options = {}) {
     },
   })
 
-  
+
   registerUi(on, {
     pluginKey,
     limitState: currentLimits, refreshLimits: refreshLimitFacts,
@@ -878,7 +879,7 @@ export function register(on, options = {}) {
     keepRoutingEnabled: () => KEEP_ROUTING_ON_ENABLED === true,
     notReadyText: () => NOTICE.notReady + (M.off || 'it did not start') + '.',
   })
-  
+
 }
 
 
@@ -887,26 +888,27 @@ export function register(on, options = {}) {
 async function startMeter($, e) {
   M = newMeter()
   T = newTracker()
-  M.interactive = !!(e && e.isInteractive === true) 
-  if (!M.interactive) await ensureInteractive($) 
+  M.interactive = !!(e && e.isInteractive === true)
+  if (!M.interactive) await ensureInteractive($)
   M.root = $.plugin.root
   M.startedMs = await $.clock.now()
   M.nowMs = M.startedMs
   M.home = await userHome($)
-  
+
   try {
     await $.command.register({ name: 'cost-read', description: 'Cost read of this session (API-equivalent dollars)', argumentHint: '[session id]', immediate: true })
     await $.command.register({ name: 'iq', description: 'IQ routing, cost and plan at a glance', immediate: true })
   } catch (err) {
     countError($, 'session.start.command', err)
   }
-  
+
   State.loadSettings(null)
   try {
     const home = await trustedSettingsHome(iqAccess($))
     const path = pathIn(home, '.claude/iq/settings.json')
-    if (home && await $.fs.exists(path)) State.loadSettings(JSON.parse(await $.fs.read(path)))
-    else State.loadSettings(null)
+    const exists = home ? await $.fs.exists(path) : null
+    if (exists === true) State.loadSettings(JSON.parse(await $.fs.read(path)))
+    else State.loadSettings(exists === false ? undefined : null)
   } catch (_) { State.loadSettings(null) }
   let problem = null
   try {
@@ -926,7 +928,7 @@ async function startMeter($, e) {
   if (usage) takeUsage(usage)
   M.bootAsOf = M.startedMs
   const held = await safe($.session.turns())
-  if (typeof held === 'number' && held > 0) T.resumed = true 
+  if (typeof held === 'number' && held > 0) T.resumed = true
   await maybeBootstrap($, false)
 }
 
@@ -994,16 +996,16 @@ async function onSubmit($, e) {
   const nowMs = typeof got[0] === 'number' ? got[0] : M.nowMs
   M.nowMs = nowMs
   if (syncSession(got[1])) {
-    
+
     M.bootAsOf = nowMs
     await maybeBootstrap($, true)
   }
   const usage = await safe($.session.usage())
   if (usage) takeUsage(usage)
-  
+
   const prev = usage ? M.usage.contextTokens : T.lastMainCtx === null ? undefined : T.lastMainCtx
-  
-  
+
+
   const estimate = prev === undefined && M.interactive ? safe($.session.usage({ breakdown: 'summary' })) : null
   const chars = typeof e.text === 'string' ? e.text.length : 0
   const pend = noteSubmit(T, { kind, nowMs, chars })
@@ -1042,7 +1044,7 @@ function syncSession(sid) {
   if (typeof sid !== 'string' || sid === '') return false
   if (M.sessionId === null) {
     M.sessionId = sid
-    if (M.boot !== 'idle') return false 
+    if (M.boot !== 'idle') return false
     noteNewSession()
     return true
   }
@@ -1095,7 +1097,7 @@ async function stepBegin($, e) {
 
 function noteStepStart(e, key, nowMs) {
   onStepStart(T, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
-  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort } 
+  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort }
 }
 
 async function stepEnd($, e, key, result, begun = {}) {
@@ -1103,15 +1105,15 @@ async function stepEnd($, e, key, result, begun = {}) {
   M.nowMs = nowMs
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
   const model = (u && u.model) || e.model
-  
+
   const advisorCalls = advisorCallsIn(result)
   const priced = u ? M.pricer.price(model, u, { main: !e.agentId, passes: advisorCalls + 1 }) : null
-  
-  
+
+
   const price = priced === null ? null : booked(priced, advisorCalls)
-  
+
   const mainCtx = u && !e.agentId ? mainPass(u, model, advisorCalls).ctx : undefined
-  
+
   const helper = e.agentId && usageHelpers.get(e.agentId)
   const named = helper ? { model: helper.model, effort: helper.effort } : begun.rec?.named || begun.namedOriginal || { model: e.model, effort: e.effort }
   const skipped = !!(begun.rec?.localSkipped || begun.rec?.reason === 'trivial_turn' || (!begun.rec && !R.last?.routed))
@@ -1139,10 +1141,10 @@ async function onComplete($, e) {
   $.ui.invalidate('ui.render')
   if (!r.isMain || !r.seg) return null
   const seg = r.seg
-  
+
   if (seg.k === 0 || !M.interactive) return null
-  
-  
+
+
   return null
 }
 
@@ -1155,8 +1157,8 @@ async function onEnd($, e) {
     await flushRows($, nowMs)
   } finally {
     if (e.reason === 'clear' || e.reason === 'resume') {
-      resetForNewSession(null) 
-      M.endReason = e.reason 
+      resetForNewSession(null)
+      M.endReason = e.reason
     }
   }
 }
@@ -1214,7 +1216,7 @@ async function flushErrors($) {
       M.errChain = M.errChain.then(run, run)
       await M.errChain
     } catch (_) {
-      
+
     }
   }
   if (RM.errQueue.length > 0) {
@@ -1230,7 +1232,7 @@ async function flushErrors($) {
       RM.errChain = RM.errChain.then(run, run)
       await RM.errChain
     } catch (_) {
-      
+
     }
   }
 }
@@ -1259,7 +1261,7 @@ function say($, text) {
     }
     void safe($.ui.log(displayText(text)))
   } catch (_) {
-    
+
   }
 }
 
@@ -1332,7 +1334,7 @@ async function rtStart($, e) {
     await refreshLimits($)
   }
   usageStart($)
-  
+
   try {
     await $.command.register({ name: 'iq-route', description: "Route this session's model and thinking level with IQ: on, off, status or reset. Wait up to 7 s for the first route or after ten minutes without a route call, 4 s otherwise; IQ_ROUTER_DEADLINE_MS overrides.", argumentHint: 'on|off|status|reset|subagents on|off', immediate: true })
   } catch (err) {
@@ -1375,7 +1377,7 @@ async function rtAutoArm($) {
         if (stored && typeof stored === 'object' && !Array.isArray(stored)) settings = stored
       } else if (exists === false) settings = {}
     }
-  } catch (_) {} 
+  } catch (_) {}
   if (!sameSession() || settings === null) return false
   State.refreshRoutingConsent(settings)
   if (!current()) return false
@@ -1497,8 +1499,8 @@ const rtIsHuman = (e) => {
 
 
 async function rtSubmit($, e) {
-  if (!RM.ready || !R.armed || e.agentId != null || (!rtIsHuman(e) && !carryEligible(e))) return null 
-  if (e.turnId !== undefined) return null 
+  if (!RM.ready || !R.armed || e.agentId != null || (!rtIsHuman(e) && !carryEligible(e))) return null
+  if (e.turnId !== undefined) return null
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
   if (carryEligible(e) || trivialTurn(e.text)) {
@@ -1543,7 +1545,7 @@ async function rtSubmit($, e) {
     return sub
   }
   rec.keyFingerprint = await fingerprintKey(key)
-  
+
   rec.result = null
   let finish
   rec.job = new Promise((resolve) => {
@@ -1564,7 +1566,7 @@ async function rtSubmit($, e) {
         }, () => finish(),
       )
     }
-    
+
     if (immediate) launch()
     else $.clock.after(0, launch)
   }
@@ -1605,9 +1607,12 @@ async function rtFetch($, req, deadlineMs, runtime, requestEpoch) {
     }
   }
   const callMs = await $.clock.now()
-  return routeFetch({ fetch: (url, init) => {
+  return routeFetch({ fetch: async (url, init) => {
+    State.refreshUsageReporting(await readUsageReporting(iqAccess($)))
+    if (!R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch || deadlineMs <= await $.clock.now()) return null
     consumeRouteReset(R, req)
     State.noteRouteCall(M.sessionId, callMs)
+    applyDataFeaturesPreference(req, State.getSetting('usageReporting'))
     return $.http.fetch(url, init)
   }, later: (ms, fn) => $.clock.after(ms, fn), now: () => $.clock.now() }, req, deadlineMs)
 
@@ -1667,7 +1672,7 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
     noteRoutingUsage(R, c.usage, t1)
     if ((SAVINGS_MODES_ENABLED || USAGE_REPORTS_ENABLED) && c.kind === 'ok' && c.usage) {
       const routePlan = parseRoutingPlan(res.text)
-      
+
       const plan = { ...(R.plan || {}), ...(routePlan || c.usage), tier: routePlan?.tier ?? R.plan?.tier ?? null }
       usageEntitlement(key.trim(), !isFreePlan(plan))
       if (SAVINGS_MODES_ENABLED && !usageIdentity.paid) { c.kind = 'plan_required'; c.code = 'plan_required'; usageSession.invalidateReporting() }
@@ -1699,7 +1704,7 @@ function rtTurnStart(e) {
   let rec = RM.pending
   if (!rec) {
     if (!rtLive() || RM.byTurn.has(e.turnId)) return
-    
+
     rec = newRecord(R, { nowMs: RM.nowMs, sessionModel: R.named?.model })
     rec.carry = carryEligible(e) ? carryPick(R, e) : null
     rec.local = { action: 'local', phase: 'kept', reason: 'trivial_turn', source: 'local', counted: false }
@@ -1709,7 +1714,7 @@ function rtTurnStart(e) {
   RM.pending = null
   rec.turnId = e.turnId
   RM.byTurn.set(e.turnId, rec)
-  if (RM.byTurn.size > 64) RM.byTurn.delete(RM.byTurn.keys().next().value) 
+  if (RM.byTurn.size > 64) RM.byTurn.delete(RM.byTurn.keys().next().value)
 }
 
 
@@ -1722,16 +1727,16 @@ async function rtStepBegin($, e) {
   const out = { e2: e, startMs: null, rec: null, changed: false, namedOriginal: { model: e.model, effort: e.effort } }
   if (!RM.ready) return out
   const main = e.agentId === undefined || e.agentId === null
-  if (!main) return out 
+  if (!main) return out
   const rec = RM.byTurn.get(e.turnId) || null
-  
+
   if ((!rec || !rec.decided) && RM.explicitEffort != null && RM.explicitEffort !== e.effort) {
     if (rec?.effortHint?.effort === RM.explicitEffort) rec.effortHint = { ...rec.effortHint, effortExplicit: false }
     RM.explicitEffort = null
   }
   if (!rec && !rtLive()) {
-    
-    
+
+
     out.startMs = await $.clock.now()
     return out
   }
@@ -1754,9 +1759,9 @@ async function rtStepBegin($, e) {
     if (out.billingMode === 'extra_usage' && facts.credit_billed_families.includes(modelFamily(e.model))) out.creditBilledFamily = modelFamily(e.model)
   }
   RM.nowMs = out.startMs
-  
+
   await rtKillCheck($)
-  
+
   if (rec?.carry) {
     const fingerprint = await fingerprintKey(await readKey(iqAccess($)))
     out.carryFingerprint = fingerprint
@@ -1768,7 +1773,7 @@ async function rtStepBegin($, e) {
     }
   }
   if (rec !== null && rec.decided) out.e2 = rtApply(e, rec)
-  out.changed = out.e2 !== e 
+  out.changed = out.e2 !== e
   if (rec?.reason === 'carried_forward' && rtLive() && statusOf(R, out.startMs) === 'on') {
     rec.choice = { model: out.e2.model, effort: out.e2.effort ?? null }
     rec.chosen = { model: out.e2.model, effort: effortLabel(out.e2.effort) }
@@ -1857,7 +1862,7 @@ async function rtDecide($, rec) {
       settleNone(R, rec, 'error', 'error', 'http_429')
       await rtNoteError($, 'iq', new Error('http_429'), { count: false })
     } else if (['plan_required', 'allowance', 'free_quota', 'free_daily', 'auth_required', ...(LIMIT_AWARE_ENABLED ? ['no_usage'] : [])].includes(c.kind)) {
-      
+
       rec.latencyMs = typeof c.latencyMs === 'number' ? c.latencyMs : null
       settlePause(R, rec, c.kind === 'plan_required' ? 'plan' : c.kind === 'auth_required' ? 'auth' : c.kind, t1)
       await persistPlanRestriction(c.kind, iqAccess($), State)
@@ -1874,14 +1879,14 @@ async function rtDecide($, rec) {
     say($, TEXT.quiet)
   }
   rtLineFor($, rec, t1)
-  $.ui.invalidate('ui.render') 
+  $.ui.invalidate('ui.render')
 }
 
 
 function rtLineFor($, rec, nowMs) {
   if (!['timeout', 'error', 'paused'].includes(rec.phase)) return
-  
-  
+
+
   if (rec.reason === 'backoff' || rec.error === 'http_429') {
     if (R.backoffNoted) return
     R.backoffNoted = true
@@ -1912,8 +1917,8 @@ function rtLineFor($, rec, nowMs) {
 
 
 function rtRace($, promise, ms) {
-  
-  
+
+
   if (!(ms > 0)) return Promise.resolve()
   return new Promise((resolve) => {
     let timer = null, finished = false
@@ -1931,14 +1936,14 @@ function rtRace($, promise, ms) {
 async function rtStepEnd($, e2, result, begun) {
   if (begun.startMs === null || e2.agentId) return
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
-  if (u === null) return 
+  if (u === null) return
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
-  await rtCacheStartLoad($) 
-  const prev = R.last 
+  await rtCacheStartLoad($)
+  const prev = R.last
   const started = R.cacheStart
-  const sessionModel = await safe($.session.model()) 
-  
+  const sessionModel = await safe($.session.model())
+
   const observed = await safe($.session.usage())
   const rateLimits = observed && observed.rateLimits
   const settings = await rtReadTtl($)
@@ -1947,12 +1952,12 @@ async function rtStepEnd($, e2, result, begun) {
   const ttlMs = latestCacheWriteTtlMs(u, e2.model) ?? writeTtlMs({ derivedMs, usage: u, prev: cachePrev ? cachePrev.last : prev, model: e2.model })
   noteMainStep(R, { model: e2.model, effort: e2.effort, startMs: begun.startMs, endMs: nowMs, usage: u, routed: begun.changed === true && !begun.rec?.userOverride, sessionModel, ttlMs, advisorCalls: advisorCallsIn(result) })
   RM.turnSteps.set(e2.turnId, (RM.turnSteps.get(e2.turnId) || 0) + 1)
-  let pricing 
+  let pricing
   if (begun.rec !== null && RM.pricer !== null) {
-    
+
     pricing = noteRecStep(begun.rec, { model: e2.model, effort: e2.effort, usage: u, pricer: RM.pricer, prev, startMs: begun.startMs, ttlMs: prev?.ttlMs ?? (R.ttlKnown ? R.ttlMs : 60 * 60 * 1000), changed: begun.changed === true, advisorCalls: advisorCallsIn(result), writeTtl: ttlMs ? ttlMs / 1000 : null, measured: begun.measured })
   }
-  if (R.cacheStart && R.cacheStart !== started) await rtCacheStartSave($, R.cacheStart) 
+  if (R.cacheStart && R.cacheStart !== started) await rtCacheStartSave($, R.cacheStart)
   return pricing
 }
 
@@ -2002,11 +2007,11 @@ async function rtComplete($, e) {
   if (e.reason === 'error' || e.isAborted) clearRouteHold(R)
   noteTurnDone(R, rec)
   usageSession.finalize(rec)
-  
+
   if (!rec.decided) settleNone(R, rec, 'off', 'off')
-  
-  
-  
+
+
+
   if (rec.routed && rec.steps === 0 && e.reason === 'error' && !R.stopped) {
     R.stopped = true
     rec.error = 'routed_request_rejected'
@@ -2032,7 +2037,7 @@ async function rtEnd($, e) {
   if (!RM.ready) return
   const open = []
   for (const rec of RM.byTurn.values()) {
-    if (!rec.decided) settleNone(R, rec, 'off', 'off') 
+    if (!rec.decided) settleNone(R, rec, 'off', 'off')
     if (!rec.done) {
       noteTurnDone(R, rec)
       open.push(rec)
@@ -2040,7 +2045,7 @@ async function rtEnd($, e) {
   }
   RM.byTurn.clear()
   if (open.length > 0) await rtWriteRows($, open)
-  
+
   if (e && (e.reason === 'clear' || e.reason === 'resume')) {
     const flags = { killed: R.killed, cardBad: R.cardBad }
     R = newRouter()
@@ -2070,7 +2075,7 @@ async function rtAppendRows(access, rows, nowMs) {
   try {
     await RM.chain
   } catch (err) {
-    
+
     R.lastError = 'decisions.write'
   }
 }
@@ -2088,13 +2093,13 @@ async function rtWriteFile(access, rows, nowMs) {
   for (let part = RM.part; part < LOG_MAX_PARTS; part++) {
     const path = pathIn(dir, day + '-' + RM.logTag + (part === 0 ? '' : '-' + (part + 1)) + '.jsonl')
     let text = ''
-    if (await access.exists(path)) text = await access.read(path) 
+    if (await access.exists(path)) text = await access.read(path)
     if (text.length + addLen > LOG_PART_CAP) continue
     await access.write(path, mergeRows(text, rows))
     RM.part = part
     return
   }
-  
+
 }
 
 
@@ -2154,17 +2159,17 @@ async function rtCommand($, e) {
     sessionOff = true
     authOff()
     rtDisarm()
-    if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) R.pause = null 
+    if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) R.pause = null
     cancelRouteWork()
-    
+
     if (KEEP_ROUTING_ON_ENABLED === true || State.getSetting('keepRoutingOn') === true) {
       const io = iqAccess($)
       offSave = State.saveSettings({ keepRoutingOn: false }, (text, patch) => writeTrustedSettings(io, text, patch))
     }
     $.ui.invalidate('ui.render')
   }
-  
-  
+
+
   if (!(await ensureInteractive($))) return {}
   if (generation !== sessionGeneration || intent !== routingIntent) return {}
   const nowMs = await $.clock.now()
@@ -2187,7 +2192,7 @@ async function rtCommand($, e) {
     if (R.killed) return { text: TEXT.killed }
     if (!R.hasKey) return { text: TEXT.noKey }
     if (!RM.home) return { text: TEXT.noHome }
-    if (R.stopped) return { text: TEXT.stopped } 
+    if (R.stopped) return { text: TEXT.stopped }
     if (R.pause && R.pause.kind === 'plan') return { text: planPauseText(R) }
     if (KEEP_ROUTING_ON_ENABLED === true) {
       const saved = await State.saveSettings({ keepRoutingOn: true, routingEligible: true },
@@ -2254,7 +2259,7 @@ async function rtCommand($, e) {
     if (RM.ready) await rtGates($)
     const lines = statusLines(R, nowMs)
     const measured = sessionMeter(currentMeterView(false), T).session.measured
-    if (R.armed && measured) lines.push(measuredSpendLine(measured), 'Saved ' + measuredDollars(measured.saved_usd) + ' (API-eq.)')
+    if (R.armed && measured) lines.push(measuredSpendLine(measured), estimatedSavingsText(measured.saved_usd), SAVINGS_NOTE)
     if (KEEP_ROUTING_ON_ENABLED === true && State.getSetting('keepRoutingOn') === true && State.getSetting('routingEligible') === false && !lines.includes(TEXT.pausedPlan) && !lines.includes(TEXT.pausedPlanRefused)) lines.push(TEXT.pausedPlan)
     if (serverMode()) lines.push(State.getSetting('subagentRouting') === true ? SUB_TEXT.pubStatusOn : SUB_TEXT.pubStatusOff)
     return { text: lines.map(displayText).join('\n') }

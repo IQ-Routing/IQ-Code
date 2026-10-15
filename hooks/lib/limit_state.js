@@ -17,8 +17,8 @@ export function newLimitState(saved = {}) {
   let exhaustionAtMs = finite(saved.exhaustionAtMs) ? saved.exhaustionAtMs : signalAtMs
   let extraUsage = saved.extraUsage === true
   let families = Array.isArray(saved.familyStates) ? saved.familyStates.slice() : []
-  
-  
+
+
   const familyFailures = new Set(families.filter((state) => state?.exhausted === true).map((state) => state.family))
   let authKind
   let apiKeyPresent = false
@@ -31,9 +31,9 @@ export function newLimitState(saved = {}) {
   let current = null
   const fallback = () => ({ planType: completed && rows.length === 0 ? 'api' : 'unknown', overridden: false, setting: 'auto' })
   function clearGatewayPause() { gatewayPause = false; gatewayResetAt = null }
-  
-  
-  
+
+
+
   function pauseGateway(nowMs) {
     gatewayPause = true
     const open = rows.filter((r) => SHARED_KINDS.includes(r.kind) && r.resets_at !== null && !resetPassed(r.resets_at, nowMs))
@@ -65,8 +65,8 @@ export function newLimitState(saved = {}) {
     auth(kind, keyPresent, nowMs) { authKind = kind; apiKeyPresent = keyPresent === true; return facts(nowMs) },
     reading(rateLimits, nowMs, { fresh = false } = {}) {
       facts(nowMs)
-      
-      
+
+
       const incoming = limitsFacts({ rateLimits, authKind: 'bearer', nowMs }).rows
       const reported = limitsFacts({ rateLimits, authKind: 'bearer' }).rows
       const changed = lastHostRows === null ? incoming.length > 0 : !same(incoming, lastHostRows)
@@ -88,8 +88,8 @@ export function newLimitState(saved = {}) {
       }
       current = limitsFacts({ rateLimits, persistedRows: previousRows, authKind, apiKeyPresent,
         planType: fallback(), settings, nowMs, signalAtMs, extraUsage, familyStates: families })
-      
-      
+
+
       if (current.billing_mode !== 'api') for (const row of previousRows) {
         if (row.resets_at === null && !reported.some((r) => r.kind === row.kind)) current.rows.push(row)
       }
@@ -112,8 +112,8 @@ export function newLimitState(saved = {}) {
           if (row) families.push({ family, exhausted: false, resets_at: row.resets_at })
         }
         clearGatewayPause()
-        
-        
+
+
         if (before.billing_mode === 'subscription' && planBlocked(rows) &&
             exhaustedAtStart !== false && finite(startedAtMs) && finite(exhaustionAtMs) &&
             (startedAtMs > exhaustionAtMs || exhaustedAtStart === true && startedAtMs === exhaustionAtMs) &&
@@ -157,7 +157,7 @@ export async function readLimitAuth({ authorize, authStatus, apiKeyPresent }) {
   try {
     if (typeof authorize === 'function') {
       const answer = await authorize()
-      
+
       kind = answer === null ? null : ['bearer', 'api-key'].includes(answer?.kind) ? answer.kind : undefined
     }
   } catch (_) {}

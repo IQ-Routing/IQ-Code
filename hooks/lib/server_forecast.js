@@ -65,7 +65,7 @@ export function newForecastClient({ nonce, now, later, fetch, onChange }) {
   let terminal = null
   const clear = (code, reason = 'forecast_unavailable') => {
     forecast = null; sheet = null; sheetExpires = 0
-    
+
     reasonCode = code === 'unavailable' && terminal ? terminal : reason
     onChange({ state: code, reasonCode, pending: false, forecast: null })
   }
@@ -91,10 +91,10 @@ export function newForecastClient({ nonce, now, later, fetch, onChange }) {
       const gen = ++generation
       onChange({ state: forecast ? 'available' : 'unavailable', reasonCode, pending: true, forecast })
       const deadline = now() + FORECAST_TIMEOUT_MS
-      
-      
+
+
       const timer = later(FORECAST_TIMEOUT_MS, () => { if (alive && generation === gen && busy) { generation += 1; clear('unavailable') } })
-      
+
       Promise.resolve().then(() => fetch(url + '/iq-code/forecast', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: 'Bearer ' + key.trim() }, body: JSON.stringify(body) })).then((res) => {
         if (!alive) return
         if (res && res.status === 402) sessionBlocked = 'not_paid'
@@ -103,14 +103,14 @@ export function newForecastClient({ nonce, now, later, fetch, onChange }) {
         if (sessionBlocked || now() < cappedUntil) { clear(sessionBlocked || 'capped'); return }
         if (generation !== gen) return
         if (now() >= deadline) { clear('unavailable'); return }
-        
+
         if (res && res.status === 503 && forecast) { onChange({ state: 'available', reasonCode, pending: true, forecast }); return }
         if (!res || res.status !== 200) { clear(res && res.status === 402 ? 'not_paid' : res && res.status === 429 ? 'capped' : 'unavailable'); return }
         const parsed = parseForecast(res.text, randomNonce, seq)
         if (!parsed) { clear('unavailable'); return }
         if (parsed.status !== 'available') {
-          
-          
+
+
           if (TERMINAL_REASONS.has(parsed.reason_code) || (parsed.reason_code === 'usage_incomplete' && observed.usage_status === 'incomplete')) terminal = parsed.reason_code
           clear('unavailable', parsed.reason_code); return
         }
@@ -131,8 +131,8 @@ export function newForecastClient({ nonce, now, later, fetch, onChange }) {
     },
     current: () => forecast,
     invalidate,
-    
-    
+
+
     newEpoch() { if (terminal === 'helpers_seen' || terminal === 'long_session') terminal = 'compacted'; invalidate('compacted') },
     end() { alive = false; generation += 1; busy = false; forecast = null; sheet = null; sheetExpires = 0 },
   }

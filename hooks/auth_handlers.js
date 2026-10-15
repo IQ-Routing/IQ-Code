@@ -46,8 +46,8 @@ async function controller($) {
   const cleanupAllowed = async () => !(await trafficOff(io)) && destinationFrom(await io.user()).base !== null
   A = createAuth({ enabled: () => host.enabled() && BROWSER_LOGIN_PLATFORMS.includes(platform), allowed, cleanupAllowed, now: () => Date.now(), after: (ms, fn) => $.clock.after(ms, fn),
     preflight: async () => {
-      
-      
+
+
       try {
         if (!(await trusted())) return false
         const executable = await resolveClaudeExecutable(processHost)
@@ -72,7 +72,7 @@ async function controller($) {
     activate: (key, live) => host.activate(key, live, { ...io, blocked: () => State.getSetting('authBlocked') === true }),
     disarm: host.disarm, stopRouting: host.stopRouting, changed: io.invalidate,
     openBrowser: async () => {
-      
+
       const ssh = await $.env.get('SSH_CONNECTION')
       const tty = await $.env.get('SSH_TTY')
       if (ssh !== undefined || tty !== undefined) return { ok: false, code: 'opener_unavailable' }
@@ -96,7 +96,7 @@ export function registerAuth(on, host) {
       const generation = bridgeGeneration
       const arg = e.args.trim().toLowerCase().replace(/\s+/g, ' ')
       const intent = arg === 'login status' ? commandGeneration : ++commandGeneration
-      
+
       const logoutKey = arg === 'logout' ? readKey(access($)) : null
       if (arg === 'logout') { if (A) A.off(); H.disarm() }
       const auth = await controller($)
@@ -108,7 +108,7 @@ export function registerAuth(on, host) {
       if (arg === 'login') { if (H.enabled()) H.begin(); await auth.login(e) }
       $.ui.invalidate('ui.render')
     } catch (_) {
-      
+
       await safe($.ui.log('IQ connection is unavailable. Routing remains off.'))
     }
     return {}

@@ -15,7 +15,7 @@ const ACK = /^(?:ok|okay|k|ok thanks|okay thanks|yes|yep|no|nope|sure|got it|sou
 export function turnText(text) {
   if (typeof text !== 'string') return null
   let rest = text.trim()
-  
+
   while (rest.startsWith('<')) {
     const block = /^<([\w-]+)(?:\s[^<>]*)?>[\s\S]*?<\/\1\s*>/.exec(rest)
     if (!block || !ENVELOPES.has(block[1].toLowerCase())) break

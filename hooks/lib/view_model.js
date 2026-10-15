@@ -1,3 +1,4 @@
+import { storedUsageReporting } from './traffic.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 
 
@@ -40,7 +41,7 @@ export function cleanSettings(s) {
     routingEligible: typeof o.routingEligible === 'boolean' ? o.routingEligible : true,
     forecastSource: FORCE_SERVER || o.forecastSource === 'server' ? 'server' : 'local',
     planType: ['api', 'subscription'].includes(o.planType) ? o.planType : 'auto',
-    usageReporting: o.usageReporting === 'off' ? 'off' : 'on',
+    usageReporting: storedUsageReporting(s),
     planTier: ['pro', 'max', 'team_standard', 'team_premium', 'enterprise'].includes(o.planTier) ? o.planTier : 'unknown',
     allowFable: o.allowFable === true,
     fableBilling: ['plan_share', 'usage_credits'].includes(o.fableBilling) ? o.fableBilling : 'auto',
@@ -106,7 +107,7 @@ export function planEta(readings, nowMs, pct, resetsAtMs, windowMs) {
   if (!isNum(nowMs) || !isNum(pct) || pct < 0) return null
   if (windowReset(resetsAtMs, nowMs).passed) return null
   if (pct >= 100) return nowMs
-  let rate = null 
+  let rate = null
   let rs = Array.isArray(readings) ? readings.filter((r) => r && isNum(r.t) && isNum(r.pct)) : []
   if (isNum(resetsAtMs) && isNum(windowMs)) rs = rs.filter((r) => r.t >= resetsAtMs - windowMs)
   const strictPace = FORCE_SERVER || stateModule && stateModule.getSetting && stateModule.getSetting('forecastSource') === 'server'
@@ -196,7 +197,7 @@ function historyOf(R, routing) {
       estSavedUsd: null,
     })
   }
-  
+
   const proj = routing && Array.isArray(routing.recent) ? routing.recent : []
   if (proj.length === out.length) for (let i = 0; i < out.length; i++) out[i].estSavedUsd = isNum(proj[i].est_saved_usd) ? proj[i].est_saved_usd : null
   for (const row of R?.subagentRecent || []) out.push({
@@ -215,7 +216,7 @@ function coldRebuild(R, pricer, ttlSeconds) {
   if (!hit) return null
   const ctx = wholePrompt(R.last)
   const rate = pricer.ratesFor(hit.row, ctx)
-  const per = ttlSeconds >= 3600 ? rate.w1 : rate.w5 
+  const per = ttlSeconds >= 3600 ? rate.w1 : rate.w5
   return isNum(per) ? (ctx * per) / 1e6 : null
 }
 
@@ -243,10 +244,10 @@ export function buildView(a) {
   const usage = a.usage || {}
   const nowMs = isNum(a.nowMs) ? a.nowMs : null
   const settings = cleanSettings(a.settings)
-  
-  
-  
-  
+
+
+
+
   const ttl = a.ttl && typeof a.ttl === 'object' ? a.ttl : { force5m: false, envTtl: '', settingTtl: '', enable1h: false }
   const nextTtlSeconds = R && R.observedCacheTtlMs != null ? R.observedCacheTtlMs / 1000 : ttlIsKnown(ttl, usage.rateLimits) ? cacheTtlMs({ ...ttl, onSubscription: onSubscription(usage.rateLimits, nowMs) }) / 1000 : null
   const latest = R && R.last ? R.last : null
@@ -256,7 +257,7 @@ export function buildView(a) {
   const named = R && R.named && isStr(R.named.model) ? canonicalModel(R.named.model) : ''
   const target = after || before || (latest && latest.routed !== true ? wrote : named) || wrote
   const entries = R && R.cacheModels || {}
-  
+
   const entry = entries[target] || Object.values(entries).find((x) => x.last && canonicalModel(x.last.sessionModel) === target &&
     (x.last.routed !== true || canonicalModel(x.last.model) === named))
   const holder = latest && latest.routed !== true && before ? before : wrote
@@ -266,9 +267,9 @@ export function buildView(a) {
   const compacted = entry ? entry.compacted === true : !!(R && R.cacheRestart)
   const ttlSeconds = last && last.ttlMs !== undefined ? (isNum(last.ttlMs) && last.ttlMs > 0 ? last.ttlMs / 1000 : null) : nextTtlSeconds
   const lastWriteAt = last && isNum(last.startMs) ? last.startMs : null
-  
-  
-  const prefix = last && last.pass && isNum(last.pass.prefix) ? last.pass.prefix : last ? last.cachedPrefix : null 
+
+
+  const prefix = last && last.pass && isNum(last.pass.prefix) ? last.pass.prefix : last ? last.cachedPrefix : null
   const cached = isNum(prefix) && prefix >= 0 ? prefix : null
   const stale = switched
   const meterUsd = a.meter && a.meter.session && isNum(a.meter.session.usd) ? a.meter.session.usd : 0
@@ -308,13 +309,13 @@ export function buildView(a) {
   if (stateModule) {
     try {
       const merged = mergeState(view, stateModule.getView(a.sessionId || null))
-      
+
       if (settings.forecastSource === 'server') merged.routing = { ...merged.routing, history: view.routing.history, counts: view.routing.counts }
-      
+
       const done = entry ? { ...merged, cache: view.cache } : merged
       return { ...done, plan: settlePlan(done.plan, nowMs) }
     } catch (_) {
-      return view 
+      return view
     }
   }
   return view

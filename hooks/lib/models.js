@@ -33,7 +33,7 @@ export function sameModel(a, b) {
 
 
 const GUESS_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']
-const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh'] 
+const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh']
 const SOURCES_HIGH_FIRST = ['policy', 'flag', 'local', 'project', 'user']
 
 export function guessEffort({ model, env, sources }) {
@@ -81,8 +81,8 @@ export function explicitModel({ env, sources, runtimeModel, startupModel, resolv
   }
   const startup = canonicalModel(startupModel)
   if (!startup) return null
-  
-  
+
+
   try {
     const resolved = canonicalModel(resolveModel(startup))
     if (resolved && ['user', 'project', 'local'].some(source => {
@@ -116,7 +116,7 @@ const NAMED_EFFORT_MODELS = new Set([
 const LIMITED_EFFORT_MODELS = new Set(['claude-opus-4-6', 'claude-sonnet-4-6'])
 export function supportsEffort(model, effort) {
   const m = canonicalModel(model)
-  
+
   if (Number.isSafeInteger(effort) && effort >= 0 && effort <= MAX_THINKING_BUDGET) return NAMED_EFFORT_MODELS.has(m) || LIMITED_EFFORT_MODELS.has(m)
   if (!EFFORTS.includes(effort)) return false
   return NAMED_EFFORT_MODELS.has(m) || LIMITED_EFFORT_MODELS.has(m) && effort !== 'xhigh'
@@ -215,8 +215,8 @@ export function capEffort(effort, named) {
   const level = effortRank(named) === null ? 'medium' : named
   const budget = Number.isSafeInteger(named) && named >= 0 ? Math.min(named, MAX_THINKING_BUDGET) : null
   if (Number.isSafeInteger(effort) && effort >= 0) {
-    
-    
+
+
     if (effortRank(named) !== null) return named
     return Math.min(effort, budget ?? UNKNOWN_THINKING_BUDGET, MAX_THINKING_BUDGET)
   }

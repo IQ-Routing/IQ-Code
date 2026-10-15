@@ -100,7 +100,7 @@ export function validateUsageReport(body, { now = Date.now(), clientVersion = '1
     TOKEN_KEYS.forEach((k, i) => { tokens[i] += BigInt(r[k]) })
   }
   if (calls > BigInt(MAX_COUNT) || routed > BigInt(MAX_COUNT) || planCalls > BigInt(MAX_COUNT) || creditCalls > BigInt(MAX_COUNT) || skipped > BigInt(MAX_COUNT) || actual > MAX_MICROS || saved > MAX_MICROS || saved < -MAX_MICROS || creditSaved > MAX_MICROS || creditSaved < -MAX_MICROS || tokens.some((v) => v > BigInt(MAX_TOKENS))) return false
-  
+
   return JSON.stringify(body).length <= 32768
 }
 
@@ -163,7 +163,7 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
     if (!next) return
     if (context && !sameContext(context, next)) {
       invalidate(); days = new Map(); currentWeekly = { window: null, capacity: null }
-      
+
       runId = typeof nonce === 'function' || nonce === undefined ? makeNonce() : randomUuid()
       if (!runId) stopped = true
     }
@@ -205,7 +205,7 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
   }
   const blocked = () => !alive || !active || !freshObservation || stopped || sessionBlocked !== null || now() < cappedUntil
   function dirtyDay() {
-    
+
     return Array.from(days.keys()).sort().find((d) => days.get(d).revision > days.get(d).attempted)
   }
   function schedule() {
@@ -239,7 +239,7 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
     let expired = false
     const deadlineTimer = later(USAGE_REPORT_TIMEOUT_MS, () => { expired = true })
     const headers = { 'content-type': 'application/json', accept: 'application/json', authorization: 'Bearer ' + authorized.key.trim() }
-    
+
     Promise.resolve().then(async () => {
       if (!alive || generation !== gen) return null
       const actualGate = await gate()
@@ -252,10 +252,10 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
       if (!alive || generation !== gen || !res) return
       if (res.status === 402 || res.status === 404) { sessionBlocked = res.status; invalidate(); return }
       if (res.status === 429) { cappedUntil = (Math.floor(now() / DAY_MS) + 1) * DAY_MS; invalidate(); return }
-      
+
       if (res.status === 204) return
       if ((res.status >= 500 || res.status === 408) && !attempt.retried && validDay(attempt.body.usage_day, now())) retry = { ...attempt, retried: true }
-      
+
       void expired
     }, () => {
       if (alive && generation === gen && !attempt.retried && validDay(attempt.body.usage_day, now())) retry = { ...attempt, retried: true }
@@ -291,7 +291,7 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
     if (f.planType === 'subscription') {
       if (f.window !== null) {
         if (currentWeekly.window === null || f.window > currentWeekly.window) { currentWeekly = { window: f.window, capacity: f.capacity }; dropOldWindows(f.window) }
-        
+
         if (currentWeekly.window === f.window) {
           let w = r.windows.get(f.window)
           if (!w) { w = { saved: zero(), known: true }; r.windows.set(f.window, w) }
@@ -301,14 +301,14 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
       }
     }
     day.revision += 1
-    
+
     const probe = { schema_version: 1, client_version: clientVersion, rate_card_version: rateCardVersion, reporting_run_id: runId, sequence: Math.max(1, sequence), usage_day: f.day, final: false, rows: rowsOf(day) }
     if (!validateUsageReport(probe, { now: now(), clientVersion, rateCardVersion })) { stopped = true; invalidate(); return false }
     return true
   }
   return {
     observe(fact) {
-      
+
       let f
       try { f = numericFact(fact, now()) } catch (_) { return Promise.resolve(false) }
       if (!f || !alive || stopped) return Promise.resolve(false)
@@ -320,7 +320,7 @@ export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { con
         prune()
         if (!commit(f)) return false
         freshObservation = true
-        
+
         if (!blocked() && !busy && lastSend === null) void send()
         else schedule()
         return true

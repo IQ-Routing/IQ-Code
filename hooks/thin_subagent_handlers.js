@@ -1,9 +1,10 @@
 
 
 import * as State from './lib/state.js'
+import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { resolveBase, planSubagent, effortFor, safeSpawnModel, gateSpawn, SUB_TEXT, readOnlyTools, readAliasHost } from './lib/subagents.js'
 import { buildRouteBody, subagentType, estimateRequest, classifyResponse, destinationFrom, consumeRouteReset, effortSettings } from './lib/iq_client.js'
-import { readKey, trafficOff, homeFrom, pathIn, persistPlanRestriction } from './lib/traffic.js'
+import { readKey, trafficOff, readUsageReporting, homeFrom, pathIn, persistPlanRestriction } from './lib/traffic.js'
 import { statusOf, noteRoutingReply, noteRoutingUsage, settlePause, lineFor, continuationIds } from './lib/router.js'
 import { trivialTurn } from './lib/trivial_turn.js'
 import { explicitEffort, explicitModel, guessEffort, defaultEffort, sameModel, supportedEffort, validateAnswer } from './lib/models.js'
@@ -47,7 +48,7 @@ const safe = (p) => Promise.resolve(p).catch(() => undefined)
 const truthy = (v) => typeof v === 'string' && v !== '' && !['0', 'false', 'off', 'no'].includes(v.toLowerCase())
 
 const subagentsOn = () => State.getSetting('subagentRouting') === true
-const startAgain = () => State.setSetting('subagentRouting', true) 
+const startAgain = () => State.setSetting('subagentRouting', true)
 export function registerThinSubagents(registerHook, ctx, enabled) {
   let agents = new Map()
   let failures = 0
@@ -68,13 +69,13 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     if (enabled()) startAgain()
     return next(e)
   })
-  
+
   registerHook('session.end', { reason: /./ }, async ($, e, next) => {
     if (enabled() && (e.reason === 'clear' || e.reason === 'resume')) startAgain()
     return next(e)
   })
-  
-  
+
+
   registerHook('turn.complete', { agentId: /./ }, async ($, e, next) => {
     if (e.agentId) markIdle(e.agentId)
     return next(e)
@@ -109,8 +110,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     let aliasHost = {}
     let reservation = null
     const pending = pendingPlans
-    
-    
+
+
     const liveReason = async () => {
       const killed = await trafficOff(iqAccess($, ctx))
       const nowMs = await $.clock.now()
@@ -136,7 +137,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       return next(e)
     }
     try {
-    if (!subagentsOn()) return await keep('subagents off') 
+    if (!subagentsOn()) return await keep('subagents off')
     const submitMs = await $.clock.now()
     if (LIMIT_AWARE_ENABLED && ctx.refreshLimits) await ctx.refreshLimits(limitAccess($))
     if (LIMIT_AWARE_ENABLED && ctx.noUsage && ctx.noUsage(await $.clock.now())) return await keep('no_usage')
@@ -163,8 +164,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       metadata.outcome = 'kept'
       return await next(e)
     }
-    
-    
+
+
     if ((e.resume?.agentId && continuationIds({ text: e.prompt, context: e.context }).length > 0) || trivialTurn(e.prompt)) {
       metadata.reason = e.resume?.agentId ? 'resume_continuation' : 'continuation'
       metadata.outcome = 'kept'
@@ -178,8 +179,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       return resolveBase(model, e.parentModel, host)
     }
     const ownModel = typeof e.model === 'string' && e.model.trim() !== '' && e.model.trim().toLowerCase() !== 'inherit'
-    
-    
+
+
     let modelExplicit = true
     let base = e.resume?.agentId && agents.get(e.resume.agentId)?.plan.model || await resolve(e.model)
     let readOnly = String(e.subagentType).toLowerCase() === 'explore'
@@ -215,8 +216,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     const effort = guessEffort({ model: base, env: effortEnv, sources }) ?? defaultEffort(base)
     metadata.named = { model: base, effort }
     const effortExplicit = configured !== null
-    
-    
+
+
     if (agents.size + pending.size >= 128) {
       let roster = null
       try { roster = await $.agent.list() } catch (_) {}
@@ -254,6 +255,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
           const remaining = Math.max(0, submitMs + deadline - await $.clock.now())
           if (remaining <= 0) { metadata.reason = 'timeout'; return await next(e) }
           if (!req) { metadata.reason = 'request_unavailable'; return await next(e) }
+          State.refreshUsageReporting(await readUsageReporting(iqAccess($, ctx)))
           const beforeSend = await liveReason()
           if (beforeSend) return await keep(beforeSend)
           let timedOut = false
@@ -262,10 +264,11 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
             let finished = false
             const timer = $.clock.after(remaining, () => { if (!finished) { finished = true; timedOut = true; resolve(null) } })
             if (finished) return
-            
+
             if (LIMIT_AWARE_ENABLED && ctx.noUsage && ctx.noUsage(sendAt)) { finished = true; timer.cancel(); resolve(null); return }
             State.noteRouteCall(ctx.getM().sessionId, sendAt)
             consumeRouteReset(r, req)
+            applyDataFeaturesPreference(req, State.getSetting('usageReporting'))
             let fetched
             try { fetched = $.http.fetch(req.url, req.init) }
             catch (err) {
@@ -315,14 +318,14 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     }
     const validAnswer = validateAnswer(answer, { model: base, effort, modelExplicit })
     const forbiddenPick = host.provider === 'anthropic' && validAnswer.ok && sameModel(answer.model, 'claude-haiku-4-5')
-    
-    
+
+
     const safeAnswer = validAnswer.ok && safeSpawnModel(answer.model, host) !== null
       ? { ...answer, model: forbiddenPick ? 'claude-haiku-5-5' : answer.model,
         stay: forbiddenPick ? false : answer.stay } : null
     const plan = planSubagent({ base: { model: base, effort, modelExplicit }, answer: safeAnswer, explicitEffort: effortExplicit ? effort : null })
-    
-    
+
+
     if (metadata.latencyMs === null) metadata.latencyMs = Math.max(0, await $.clock.now() - started)
     const stopped = await liveReason()
     if (stopped || r.routingRefused) {
@@ -335,7 +338,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       metadata.reason = forbiddenPick ? 'haiku_55_required' : plan.reason
       metadata.outcome = plan.action !== 'keep' || plan.fromIq && plan.effort !== effort ? 'applied' : 'kept'
     }
-    
+
     const changed = !e.resume && plan.action !== 'keep'
     const input = changed ? { ...e, model: safeSpawnModel(plan.model, host) } : e
     let result
@@ -384,7 +387,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       throw err
     } finally {
       if (reservation) pending.delete(reservation)
-      
+
       try {
         if (spawnResult && typeof spawnResult.model === 'string' && typeof spawnResult.deny !== 'string') {
           metadata.chosen = { model: resolveBase(spawnResult.model, e.parentModel, aliasHost), effort: metadata.chosen?.effort ?? metadata.named.effort }
@@ -396,7 +399,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
           exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), write: (path, text) => $.fs.write(path, text),
         })).catch(() => {})
         try { $.ui.invalidate('ui.render') } catch (_) {}
-      } catch (_) {} 
+      } catch (_) {}
     }
   })
   registerHook('turn.step', { model: /./ }, async function* ($, e, next) {

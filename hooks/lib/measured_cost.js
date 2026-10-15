@@ -20,14 +20,14 @@ export function measuredTokens(usage, main = false, writeTtl = null) {
       if (!count(a) || !count(b) || a + b > writes) missing.push('cache_creation_split')
       else {
         const rest = writes - a - b
-        
+
         w5 = a + rest; w1 = b
       }
     } else if (writeTtl === 300 || writeTtl === 3600) { w5 = writeTtl === 300 ? writes : 0; w1 = writeTtl === 3600 ? writes : 0 }
     else missing.push('cache_creation_split')
   }
-  
-  
+
+
   const explicitThinking = u.thinking_tokens ?? u.reasoning_tokens ?? u.output_tokens_details?.reasoning_tokens
   let thinking = null, output = outputTotal
   if (explicitThinking !== undefined && explicitThinking !== null) {
@@ -41,14 +41,14 @@ function priceClasses(pricer, model, tokens, passes = 1) {
   const hit = pricer.resolve(priceId(model))
   if (!hit) return { usd: null, missing: ['model_rate'] }
   const context = (tokens.input + tokens.cache_read + tokens.cache_write_5m + tokens.cache_write_1h) / Math.max(1, passes)
-  
+
   const r = hit.row.tier_break_tokens && context > hit.row.tier_break_tokens && hit.row.tier_above ? hit.row.tier_above : hit.row
   const rates = { input: r.input, cache_read: r.cache_read, cache_write_5m: r.cache_write_5m,
     cache_write_1h: r.cache_write_1h, output: r.output, thinking: r.output }
   const missing = [], parts = {}
   for (const key of keys) {
     const n = tokens[key]
-    if (n === null && key === 'thinking') continue 
+    if (n === null && key === 'thinking') continue
     if (!money(rates[key]) && (n > 0 || key === 'input' || key === 'output')) missing.push(key + '_rate')
     else parts[key] = n === 0 ? 0 : n * rates[key] / 1e6
   }
@@ -97,7 +97,7 @@ export function measureCall(pricer, { model, effort = null, named = null, usage,
   if (!named?.model) missing.push('named_model')
   if (!namedEffortKnown) missing.push('named_effort')
   if (!skipped && penalty === null) missing.push('rebuild_debit_usd')
-  
+
   const extras = extraPasses(usage, model)
   for (const pass of extras) {
     const t = measuredTokens(pass.usage, false, 300)
@@ -116,7 +116,7 @@ export function measureCall(pricer, { model, effort = null, named = null, usage,
   const advisorUnpriced = Math.max(0, advisorCalls - extras.filter((p) => p.type === 'advisor_message').length)
   if (advisorUnpriced) { missing.push('advisor_usage'); paidComplete = false }
   const complete = missing.length === 0 && actual.usd !== null && baseline.usd !== null
-  
+
   const saved = skipped ? penalty > 0 ? -penalty : 0 : complete ? baseline.usd - actual.usd - penalty : null
   return { model, effort, named_model: named?.model || null, named_effort: named?.effort ?? null,
     usage: tokens.usage, paid_usd: actual.usd, baseline_usd: baseline.usd,
@@ -134,7 +134,7 @@ export function newMeasuredLedger() {
 export function addMeasured(ledger, row) {
   if (!row) return ledger
   ledger.calls += 1
-  
+
   ledger.paid_usd = (ledger.paid_usd ?? 0) + (money(row.paid_usd) ? row.paid_usd : 0)
   const paidComplete = money(row.paid_usd) && (row.paid_complete ?? row.complete) !== false
   if (!paidComplete) ledger.unpriced_calls = (ledger.unpriced_calls || 0) + 1

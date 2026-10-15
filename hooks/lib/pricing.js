@@ -53,7 +53,7 @@ function ownPasses(usage, model) {
     if (!e || typeof e !== 'object' || !isStr(e.type)) continue
     if (e.type === 'fallback_message') own.push(e)
     else if (e.type === 'message' && (!isStr(e.model) || sameId(e.model, ran))) own.push(e)
-    else other.push(e) 
+    else other.push(e)
   }
   return { ran, own, other }
 }
@@ -144,7 +144,7 @@ export function modelClass(model) {
     }
     return 'gpt-other'
   }
-  
+
   for (const k of families) if (m === k || m.startsWith(k + '-')) return 'claude-' + k
   return 'other'
 }
@@ -159,18 +159,12 @@ export function effortClass(e) {
   return 'unknown'
 }
 
-
-export function contextTokensOf(usage) {
-  if (!usage) return 0
-  return num(usage.input_tokens) + num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens)
-}
-
 export function makePricer(card) {
   const rows = card.models
   const keys = Object.keys(rows).filter((k) => rows[k] && rows[k].priced !== false)
   const resolved = new Map()
 
-  
+
   function resolve(model) {
     if (typeof model !== 'string' || model === '') return null
     if (resolved.has(model)) return resolved.get(model)
@@ -190,7 +184,7 @@ export function makePricer(card) {
     return found
   }
 
-  
+
   function ratesFor(row, contextTokens) {
     const rIn = row.input
     const rOut = row.output
@@ -212,9 +206,9 @@ export function makePricer(card) {
     return { input: rIn, output: rOut, read: rCr, w5: rW5, w1: rW1, isTier: false }
   }
 
-  
-  
-  
+
+
+
   function priceCounters(row, usage, isMain, passes = 1) {
     const inp = num(usage && usage.input_tokens)
     const out = num(usage && usage.output_tokens)
@@ -225,7 +219,7 @@ export function makePricer(card) {
     const cw5 = named ? num(split.ephemeral_5m_input_tokens) : 0
     const cw1 = named ? num(split.ephemeral_1h_input_tokens) : 0
     const unsplit = Math.max(cw - cw5 - cw1, 0)
-    
+
     const w5tokens = cw5 + (named || !isMain ? unsplit : 0)
     const w1tokens = cw1 + (!named && isMain ? unsplit : 0)
     const context = inp + cr + cw
@@ -242,17 +236,17 @@ export function makePricer(card) {
     return { usd: parts.input + parts.read + parts.write5 + parts.write1h + parts.output, priced: true, parts, tokens, context }
   }
 
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
+
+
+
+
+
+
+
+
+
+
+
   function price(model, usage, opts) {
     const isMain = !!(opts && opts.main)
     const hit = resolve(model)

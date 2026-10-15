@@ -35,6 +35,27 @@ export async function trustedSettingsHome(access) {
 }
 
 
+export function storedUsageReporting(settings) {
+  if (settings === undefined) return 'on'
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return 'off'
+  return !Object.hasOwn(settings, 'usageReporting') || settings.usageReporting === 'on' ? 'on' : 'off'
+}
+
+export async function readUsageReporting(access) {
+  try {
+    const home = await trustedSettingsHome(access)
+    if (!home) return 'off'
+    const target = pathIn(home, '.claude/iq/settings.json')
+    const exists = await access.exists(target)
+    if (exists === false) return 'on'
+    if (exists !== true) return 'off'
+    const text = await access.read(target)
+    if (typeof text !== 'string') return 'off'
+    return storedUsageReporting(JSON.parse(text))
+  } catch (_) { return 'off' }
+}
+
+
 
 const SETTINGS_TRANSACTION = `
 const fs = require('node:fs'), path = require('node:path');
@@ -60,12 +81,13 @@ const lock = target + '.lock';
     try { current = JSON.parse(fs.readFileSync(target, 'utf8')); }
     catch (error) { if (error instanceof SyntaxError) recovered = true; else if (error.code !== 'ENOENT') throw error; }
     if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true;
-    if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false };
+    if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' };
     const merged = { ...current, ...patch, v: 1 };
+    if (recovered) merged.usageReporting = 'off';
     delete merged.subagentRouting; // session-only: never saved
     fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600 });
     fs.renameSync(temporary, target);
-    process.stdout.write(JSON.stringify(Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))));
+    process.stdout.write(JSON.stringify(Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))));
   } finally {
     try { fs.unlinkSync(temporary); } catch (_) {}
     fs.closeSync(fd);
@@ -80,7 +102,7 @@ export async function writeTrustedSettings(access, text, patch) {
   const changes = patch === undefined ? JSON.parse(text) : patch
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('settings_patch_invalid')
   const target = pathIn(home, '.claude/iq/settings.json')
-  
+
   const candidates = /^[A-Za-z]:[\\/]/.test(home)
     ? [home.slice(0, 2) + '\\Program Files\\nodejs\\node.exe']
     : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
@@ -94,9 +116,9 @@ export async function writeTrustedSettings(access, text, patch) {
       break
     }
   }
-  
-  
-  
+
+
+
   const exists = await access.exists(target)
   if (exists !== true && exists !== false) throw new Error('settings_read_unavailable')
   let current = {}, recovered = false
@@ -106,13 +128,14 @@ export async function writeTrustedSettings(access, text, patch) {
     catch (error) { if (error instanceof SyntaxError) recovered = true; else throw error }
     if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true
   }
-  
-  
-  if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false }
+
+
+  if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' }
   const merged = { ...current, ...changes, v: 1 }
-  delete merged.subagentRouting 
+  if (recovered) merged.usageReporting = 'off'
+  delete merged.subagentRouting
   await access.write(target, JSON.stringify(merged, null, 1) + '\n')
-  return Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))
+  return Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))
 }
 
 
@@ -157,8 +180,8 @@ export async function readKey(access) {
     const exists = await access.exists(pathIn(home, '.claude/iq/key'))
     if (exists === true) return validKey(await access.read(pathIn(home, '.claude/iq/key')))
     if (exists !== false) return null
-    
-    
+
+
     const user = await access.user()
     return validKey(user && user.env && user.env.IQ_ROUTER_KEY)
   } catch (_) { return null }
@@ -171,7 +194,7 @@ export async function trafficOff(access) {
     if (truthy(await access.disabled())) return true
     const home = await access.home()
     if (!home) return true
-    
+
     return (await access.exists(pathIn(home, '.claude/iq/router/OFF'))) !== false
   } catch (_) { return true }
 }

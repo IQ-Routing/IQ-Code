@@ -38,7 +38,7 @@ export function createAuth(h) {
   const cleanupAllowed = async () => {
     try { return (await (h.cleanupAllowed ? h.cleanupAllowed() : h.allowed('cleanup'))) === true } catch (_) { return false }
   }
-  
+
   const wait = (operation, ms, onLate) => new Promise((resolve) => {
     let done = false, timer
     const item = { cancel: () => finish({ ok: false, code: 'cancelled' }) }
@@ -70,7 +70,7 @@ export function createAuth(h) {
     const result = await wait(() => h.request(req, { cleanup }), ms, onLate && ((response) => onLate(parseAuthResponse(response, req, action))))
     if (!result.ok) return result
     const parsed = parseAuthResponse(result.value, req, action)
-    
+
     if (!await permitted()) return parsed.ok && action === 'token' ? { ...parsed, stale: true } : { ok: false, code: 'traffic_blocked' }
     return parsed
   }
@@ -92,7 +92,7 @@ export function createAuth(h) {
     stopTimer(a)
     if (!a || !a.key || a.revoking) return
     const key = a.key; a.key = null; a.revoking = true
-    
+
     Promise.resolve().then(() => revoke(key)).catch(() => {})
   }
   const rollbackConsent = (a) => {
@@ -169,7 +169,7 @@ export function createAuth(h) {
     if (!current(a.gen) || attempt !== a) { rollbackConsent(a); abandon(a); return }
     if (!saved) { fail(a, 'settings_save_failed'); return }
     if (!await allowed(a.gen, 'activate')) { fail(a, 'traffic_blocked'); return }
-    
+
     if (h.installKey) {
       let installed = false
       try { installed = (await h.installKey(a.key, () => current(a.gen) && attempt === a)) === true } catch (_) {}
@@ -230,7 +230,7 @@ export function createAuth(h) {
     set('pending')
     schedule(a, a.interval)
     if (h.openBrowser && await allowed(a.gen, 'open')) {
-      
+
       Promise.resolve().then(() => current(a.gen) && h.openBrowser(AUTH_VERIFICATION_URL)).catch(() => {})
     }
   }
@@ -247,7 +247,7 @@ export function createAuth(h) {
     const work = async () => {
       let saved = false, overwritten = false
       try { saved = succeeded(await h.saveSettings({ authBlocked: true, keepRoutingOn: false }, owned)) } catch (_) {}
-      
+
       const sentinel = await enqueueConfigure(LOGGED_OUT_KEY, owned)
       overwritten = succeeded(sentinel)
       const keyResult = await wait(() => keyRead, 1000)

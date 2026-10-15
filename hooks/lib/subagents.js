@@ -33,7 +33,7 @@ export const SUB_TEXT = {
   routed: (type, to) => 'iq-route: subagent' + (type ? ' ' + type : '') + ' on ' + to + ' (IQ decision)',
   usageSub: 'iq-route: use subagents on or subagents off.',
   subOff: 'iq-route: subagent routing is off.',
-  
+
   pubOn: 'iq-route: subagent routing is on until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. While routing is on, IQ rates each subagent task: its task brief (best-effort secret scrubbing, up to 16,000 characters) is sent to IQ and counts as one IQ decision. A task IQ cannot rate keeps its model. /iq-route subagents off stops it now.',
   pubOff: 'iq-route: subagent routing is off until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. No subagent task brief is sent to IQ, and each subagent keeps the model Claude Code gives it. /iq-route subagents on turns it back on now.',
   pubStatusOn: 'iq-route: subagent routing is on (subagent tasks are rated while routing is on). /iq-route subagents off stops it for this session.',
@@ -47,8 +47,8 @@ export const SUB_TEXT = {
 export function resolveBase(requested, parentModel, host = {}) {
   const r = typeof requested === 'string' ? requested.trim().toLowerCase() : ''
   let model = r === '' || r === 'inherit' ? canonicalModel(parentModel) : canonicalModel(r)
-  
-  
+
+
   model = model.replace(/@20\d{6}$/, '')
   const bedrock = /^(?:[a-z0-9-]+\.)?anthropic\.(claude-(?:opus|sonnet|haiku)-\d+(?:-\d{1,2})?)-v\d+:\d+$/.exec(model)
   if (bedrock) model = bedrock[1]
@@ -113,15 +113,15 @@ export function effortFor(plan, engineEffort) {
 
 export function gateSpawn(g, spawn) {
   if (g.on !== true) return 'off'
-  if (g.interactive !== true) return 'headless' 
-  
-  
+  if (g.interactive !== true) return 'headless'
+
+
   let mainOn = g.mainOn === true
   if (!mainOn) return 'main_off'
   if (g.killed) return 'killed'
   if (!g.hasKey) return 'no_key'
   if (g.errorsOff || g.stopped) return 'paused_errors'
-  if (spawn.fork === true) return 'fork' 
+  if (spawn.fork === true) return 'fork'
   const workflowSkip = workflowSkipReason(spawn)
   if (workflowSkip) return workflowSkip
   if (spawn.isTeammate === true) return 'teammate'

@@ -4,18 +4,18 @@ import { dayOf, isoOf, sha256Hex } from './util.js'
 import { validateAnswer, rankOf, sameModel, displayModel, effortLabel, sameChoice, canonicalModel, applicableChoice, supportsEffort, effortRaise, modelRaise } from './models.js'
 import { DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, cleanText, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
 import { VERSION } from './pins.js'
-import { noUsageLine, NO_USAGE_FALLBACK, windowReset } from './format.js'
+import { estimatedSavingsText, noUsageLine, NO_USAGE_FALLBACK, windowReset } from './format.js'
 import { mainPass, latestCacheWriteTtlMs } from './pricing.js'
 import { measureCall, rebuildDebit } from './measured_cost.js'
 import { trivialTurn, turnText } from './trivial_turn.js'
 export { trivialTurn, turnText } from './trivial_turn.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 
-export const RT_VERSION = VERSION 
-export const RT_DIR = '.claude/iq/router' 
-export const RECENT_MAX = 10 
-export const MAX_IQ_FAILS = 5 
-export const DEFAULT_PHASE_REQUESTS = 8 
+export const RT_VERSION = VERSION
+export const RT_DIR = '.claude/iq/router'
+export const RECENT_MAX = 10
+export const MAX_IQ_FAILS = 5
+export const DEFAULT_PHASE_REQUESTS = 8
 const TTL_5M = 5 * 60 * 1000
 const TTL_1H = 60 * 60 * 1000
 const r6 = (x) => (typeof x === 'number' && Number.isFinite(x) ? Math.round(x * 1e6) / 1e6 : null)
@@ -84,46 +84,46 @@ export function onSubscription(rateLimits, nowMs) {
 
 export function newRouter() {
   return {
-    armed: false, 
-    plan: null, 
-    usage: null, 
-    pause: null, 
+    armed: false,
+    plan: null,
+    usage: null,
+    pause: null,
     deadlineMs: COLD_DEADLINE_MS,
-    resetNextRoute: false, 
-    recent: [], 
-    subagentRecent: [], 
+    resetNextRoute: false,
+    recent: [],
+    subagentRecent: [],
     subagentsRated: 0,
-    killed: false, 
-    cardBad: false, 
+    killed: false,
+    cardBad: false,
     hasKey: false,
-    errorsOff: false, 
-    stopped: false, 
-    errors: 0, 
-    iqFails: 0, 
-    backoffUntil: 0, 
+    errorsOff: false,
+    stopped: false,
+    errors: 0,
+    iqFails: 0,
+    backoffUntil: 0,
     backoffNoted: false,
     pauseNoted: false,
     routeHold: null,
-    failureNotices: new Set(), 
-    routingRefused: false, 
+    failureNotices: new Set(),
+    routingRefused: false,
     routingReply: 0,
-    lastAppliedPick: null, 
-    agentPicks: new Map(), 
-    named: null, 
-    current: null, 
-    last: null, 
-    cacheStart: null, 
-    cacheRestart: false, 
-    cacheModels: {}, 
-    cacheStartRead: false, 
+    lastAppliedPick: null,
+    agentPicks: new Map(),
+    named: null,
+    current: null,
+    last: null,
+    cacheStart: null,
+    cacheRestart: false,
+    cacheModels: {},
+    cacheStartRead: false,
     seq: 0,
     counters: { prompts: 0, routed: 0, kept: 0, noDecision: 0, byModel: {}, savedUsd: null },
     stats: { turns: 0, steps: 0, out: 0, fresh: 0, maxGapS: 0 },
     lastError: null,
     ttlMs: TTL_5M,
-    observedCacheTtlMs: null, 
+    observedCacheTtlMs: null,
     compactions: 0,
-    ttlKnown: false, 
+    ttlKnown: false,
   }
 }
 
@@ -193,7 +193,7 @@ export function settleCarried(R, rec, pick) {
   rec.named = { ...pick.named }
   rec.pickEpochs = { ...pick.epochs }
   rec.pricedAs = pick.pricedAs
-  
+
   rec.counted = false
   settleDecision(R, rec, { phase: 'applied', source: 'local', reason: 'carried_forward',
     choice: { ...pick.choice }, tier: null, stay: null, block: null, error: null })
@@ -211,7 +211,7 @@ export function newRecord(R, { nowMs, sessionModel }) {
     source: 'none',
     reason: 'off',
     tier: null,
-    choice: { model, effort: R.named && R.named.effort !== undefined ? R.named.effort : null }, 
+    choice: { model, effort: R.named && R.named.effort !== undefined ? R.named.effort : null },
     chosen: { model, effort: R.named ? effortLabel(R.named.effort) : null },
     named: null,
     iqRequestId: null,
@@ -222,17 +222,17 @@ export function newRecord(R, { nowMs, sessionModel }) {
     block: null,
     sent: null,
     error: null,
-    counted: false, 
-    local: null, 
+    counted: false,
+    local: null,
     decided: false,
     turnId: null,
     steps: 0,
-    usage: {}, 
+    usage: {},
     usdActual: 0,
     usdNamed: 0,
     priced: true,
     routed: false,
-    touched: false, 
+    touched: false,
     done: false,
   }
   if (Array.isArray(R.recent)) {
@@ -263,7 +263,7 @@ export function statusOf(R, nowMs) {
   if (R.killed || R.cardBad) return 'killed'
   if (!R.hasKey) return 'no_key'
   if (R.errorsOff || R.stopped) return 'paused_errors'
-  if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) return 'paused_plan' 
+  if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) return 'paused_plan'
   if (!R.armed) return 'off'
   if (LIMIT_AWARE_ENABLED && (R.noUsage || R.pause && R.pause.kind === 'no_usage')) return 'paused_no_usage'
   if (R.pause && ['plan', 'auth'].includes(R.pause.kind)) return 'paused_plan'
@@ -301,7 +301,7 @@ export function fastSubmit(R, nowMs, text, named) {
     R.routeHold.remaining -= 1
     return { action: 'local', phase: 'kept', reason: 'server_hold', source: 'none', counted: false }
   }
-  clearRouteHold(R) 
+  clearRouteHold(R)
   return null
 }
 export function settleKept(R, rec, reason) {
@@ -338,7 +338,7 @@ export function decide(R, c) {
   d.block = 'used'
   d.reason = answer.reason
   let choice = { model: answer.model, effort: answer.effort }
-  
+
   if (answer.stay) {
     const current = R.last
     if (!current || !validateAnswer({ ...c.est.block, model: current.model }, named).ok) return { ...d, phase: 'error', error: 'no_rating' }
@@ -406,7 +406,7 @@ export function settleNone(R, rec, phase, reason, error) {
 
 
 export function settlePause(R, rec, kind, nowMs) {
-  
+
   if (rec.replySequence != null && rec.replySequence !== R.routingReply) {
     settleNone(R, rec, 'paused', 'paused')
     return
@@ -419,10 +419,10 @@ export function settlePause(R, rec, kind, nowMs) {
     settleNone(R, rec, 'paused', 'no_usage', 'no_usage_left')
     return
   }
-  
+
   if (kind === 'plan' || kind === 'auth') R.pause = { kind, posted: true }
   else R.pause = { kind, posted: true, untilMs: kind === 'free_daily' ? nextUtcDayMs(nowMs) : nextUtcMonthMs(nowMs) }
-  R.pauseNoted = true 
+  R.pauseNoted = true
   settleNone(R, rec, 'paused', 'paused', kind === 'plan' ? 'plan_required' : kind === 'auth' ? 'key_rejected' : kind === 'free_quota' ? FREE_ROUTING.monthlyCode : kind === 'free_daily' ? FREE_ROUTING.dailyCode : 'allowance_exceeded')
 }
 
@@ -550,7 +550,7 @@ export function writeTtlMs({ derivedMs, usage, prev, model }) {
     const w5 = split ? num(split.ephemeral_5m_input_tokens) : 0
     if (w1 > 0 && w5 === 0) return 3_600_000
     if (w5 > 0 && w1 === 0) return 300_000
-    if (w1 > 0 && w5 > 0) return null 
+    if (w1 > 0 && w5 > 0) return null
   }
   return typeof derivedMs === 'number' && derivedMs > 0 ? derivedMs : null
 }
@@ -567,15 +567,15 @@ export function noteMainStep(R, { model, effort, startMs, endMs, usage, routed, 
     if (gap > R.stats.maxGapS) R.stats.maxGapS = gap
   }
   const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0)
-  
-  
-  
-  
+
+
+
+
   const pass = mainPass(usage, model, advisorCalls)
   const key = canonicalModel(model)
   const entries = R.cacheModels || (R.cacheModels = {})
   const previous = entries[key]
-  
+
   const display = { cacheStart: previous && previous.start || (R.cacheStart && canonicalModel(R.cacheStart.model) === key ? R.cacheStart : null), cacheRestart: previous ? previous.compacted : R.cacheRestart }
   noteCacheStart(display, { model, tokens: pass.prefix, endMs })
   noteCacheStart(R, { model, tokens: pass.prefix, endMs })
@@ -661,7 +661,7 @@ export function routingState(R, nowMs) {
     status,
     pause_until: status === 'paused_allowance' ? ymdUtc(R.pause.untilMs) : null,
     ...(status === 'paused_no_usage' ? { no_usage_reset: R.limitFacts && R.limitFacts.next_reset } : {}),
-    pause_reply: status === 'paused_plan' && R.pause?.posted === true, 
+    pause_reply: status === 'paused_plan' && R.pause?.posted === true,
     named: R.named ? { model: R.named.model, effort: effortLabel(R.named.effort) } : null,
     current: cur
       ? {
@@ -688,7 +688,7 @@ export function routingState(R, nowMs) {
     },
     usage: R.usage && R.usage.month === new Date(nowMs).toISOString().slice(0, 7) ? { ...R.usage } : null,
     last_error: R.lastError,
-    
+
     recent: R.recent
       .filter((r) => r.phase !== 'deciding')
       .map((r) => ({
@@ -808,7 +808,7 @@ export function statusLines(R, nowMs) {
   else {
     const c = s.session
     let l = 'iq-route: on · ' + c.routed + ' of ' + c.prompts + ' prompts routed'
-    if (c.est_saved_usd !== null) l += c.est_saved_usd < 0 ? ' · est. extra $' + (-c.est_saved_usd).toFixed(2) + ' (API-equivalent)' : ' · est. saved $' + c.est_saved_usd.toFixed(2) + ' (API-equivalent)'
+    if (c.est_saved_usd !== null) l += ' · ' + estimatedSavingsText(c.est_saved_usd, value => '$' + Math.abs(value).toFixed(2))
     out.push(l)
     if (R.backoffUntil > nowMs) out.push('iq-route: IQ is rate-limiting; no calls for ' + Math.max(1, Math.ceil((R.backoffUntil - nowMs) / 60000)) + ' more min.')
   }

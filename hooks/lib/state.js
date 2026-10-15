@@ -1,5 +1,6 @@
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 import { FORCE_SERVER } from './runtime_mode.js'
+import { storedUsageReporting } from './traffic.js'
 import { deadlineFrom, DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, ROUTE_IDLE_MS } from './iq_client.js'
 
 
@@ -37,21 +38,22 @@ let dashboard = null
 let pendingDashboard = undefined
 let sessionChoices = {}
 let settingsSessionActive = false
+let usageReportingSessionOnly = false
 
 function resolvedSettings() {
   const out = { ...store.settings }
   if (!settingsSessionActive) return out
   for (const k of DASHBOARD_SETTING_KEYS) out[k] = dashboard ? dashboard[k] : DEFAULT_SETTINGS[k]
   Object.assign(out, sessionChoices)
-  
-  
+
+
   if (dashboard && Object.hasOwn(sessionChoices, 'budgetUnit') && sessionChoices.budgetUnit !== dashboard.budgetUnit && !Object.hasOwn(sessionChoices, 'defaultTaskBudget')) out.defaultTaskBudget = null
   if (out.budgetUnit === 'plan_pct' && out.defaultTaskBudget > 100) out.defaultTaskBudget = null
   return out
 }
 
 export function startSettingsSession() {
-  settingsSessionActive = false 
+  settingsSessionActive = false
   dashboard = null
   pendingDashboard = undefined
   sessionChoices = {}
@@ -131,7 +133,7 @@ function slot(sid) {
   if (!s) {
     s = blank()
     store.sessions.set(k, s)
-    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value) 
+    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value)
   }
   return s
 }
@@ -152,7 +154,7 @@ function notify() {
     try {
       fn()
     } catch (_) {
-      
+
     }
   }
 }
@@ -231,7 +233,7 @@ export function setSetting(k, v) {
   if (store.settings[k] === v) {
     if (pairedChanged) persistNow(changedSettings(before))
     if (wasDashboard || pairedChanged) notify()
-    return false 
+    return false
   }
   store.settings[k] = v
   if (!SESSION_ONLY_KEYS.includes(k)) persistNow(changedSettings(before))
@@ -243,11 +245,13 @@ export function setSetting(k, v) {
 export function loadSettings(obj) {
   const o = obj && typeof obj === 'object' ? obj : {}
   const next = { ...DEFAULT_SETTINGS }
+  usageReportingSessionOnly = false
   for (const k of SETTING_KEYS) if (!SESSION_ONLY_KEYS.includes(k) && valid(k, o[k])) next[k] = o[k]
-  
-  
+  next.usageReporting = storedUsageReporting(obj)
+
+
   next.defaultTaskBudget = null
-  next.subagentRouting = DEFAULT_SETTINGS.subagentRouting 
+  next.subagentRouting = DEFAULT_SETTINGS.subagentRouting
   store.settings = next
   if (LIMIT_AWARE_ENABLED && Object.hasOwn(o, 'limitReading')) limitReading = cleanLimitReading(o.limitReading)
   store.pending = false
@@ -257,7 +261,22 @@ export function loadSettings(obj) {
 }
 
 
+export function keepUsageReportingOffForSession() {
+  usageReportingSessionOnly = true
+  refreshUsageReporting('off')
+}
+
+export function refreshUsageReporting(value) {
+  const next = !usageReportingSessionOnly && value === 'on' ? 'on' : 'off'
+  if (store.settings.usageReporting !== next) {
+    store.settings.usageReporting = next
+    notify()
+  }
+}
+
+
 export function refreshRoutingConsent(obj) {
+  refreshUsageReporting(storedUsageReporting(obj))
   const value = obj && typeof obj === 'object' ? obj : {}
   for (const key of ['keepRoutingOn', 'authBlocked', 'routingEligible']) {
     store.settings[key] = valid(key, value[key]) ? value[key] : DEFAULT_SETTINGS[key]
@@ -279,8 +298,8 @@ export function saveSettings(patch, write, guard = () => true) {
     if ((values.budgetUnit || getSetting('budgetUnit')) === 'plan_pct' && values.defaultTaskBudget > 100) return false
     const before = { ...store.settings }
     const beforeChoices = { ...sessionChoices }
-    
-    
+
+
     const persistence = store.persist
     store.persist = null
     try { for (const [key, value] of Object.entries(values)) setSetting(key, value) }
@@ -288,12 +307,14 @@ export function saveSettings(patch, write, guard = () => true) {
     notify()
     const actualPatch = { ...store.pendingPatch }
     for (const [key, value] of Object.entries(values)) if (!SESSION_ONLY_KEYS.includes(key)) actualPatch[key] = value
+
+    if (values.usageReporting === 'off') usageReportingSessionOnly = true
     try {
       const merged = await write(settingsText(), actualPatch)
       if (guard() !== true) {
         store.settings = before
         sessionChoices = beforeChoices
-        
+
         const restrictive = { keepRoutingOn: false, authBlocked: true, routingEligible: false }
         const rollback = Object.fromEntries(Object.keys(actualPatch).map(key => [key, Object.hasOwn(restrictive, key) ? restrictive[key] : key === 'limitReading' ? limitReading : before[key]]))
         for (const key of Object.keys(restrictive)) if (Object.hasOwn(rollback, key)) store.settings[key] = restrictive[key]
@@ -306,7 +327,9 @@ export function saveSettings(patch, write, guard = () => true) {
         clearPending(actualPatch)
         return false
       }
-      
+      if (Object.hasOwn(values, 'usageReporting')) usageReportingSessionOnly = false
+      if (merged && Object.hasOwn(merged, 'usageReporting')) refreshUsageReporting(storedUsageReporting(merged))
+
       let consentChanged = false
       if (merged && typeof merged === 'object') for (const key of ['keepRoutingOn', 'authBlocked', 'routingEligible']) {
         if (!Object.hasOwn(values, key) && valid(key, merged[key]) && store.settings[key] !== merged[key]) {
@@ -318,8 +341,8 @@ export function saveSettings(patch, write, guard = () => true) {
       clearPending(actualPatch)
       return true
     } catch (_) {
-      
-      
+
+
       if (values.authBlocked !== true && (Object.prototype.hasOwnProperty.call(values, 'keepRoutingOn') || Object.prototype.hasOwnProperty.call(values, 'authBlocked'))) { store.settings = before; sessionChoices = beforeChoices }
       clearPending(actualPatch)
       notify()
@@ -375,7 +398,7 @@ function persistNow(patch) {
     if (r && typeof r.then === 'function') r.then(() => clearPending(pending), () => {})
     else clearPending(pending)
   } catch (_) {
-    
+
   }
 }
 
@@ -439,6 +462,7 @@ export function resetSession(sessionId, keepSessionOnly = false) {
 
 
 export function resetAll() {
+  usageReportingSessionOnly = false
   settingsSessionActive = false
   dashboard = null
   pendingDashboard = undefined
