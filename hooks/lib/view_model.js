@@ -199,7 +199,11 @@ function historyOf(R, routing) {
   
   const proj = routing && Array.isArray(routing.recent) ? routing.recent : []
   if (proj.length === out.length) for (let i = 0; i < out.length; i++) out[i].estSavedUsd = isNum(proj[i].est_saved_usd) ? proj[i].est_saved_usd : null
-  return out
+  for (const row of R?.subagentRecent || []) out.push({
+    at: parseIso(row.ts), scope: 'subagent', agentType: row.subagent_type, agentId: row.agent_id,
+    from: row.named, to: row.chosen, phase: row.outcome, reason: row.reason, rated: row.rated, estSavedUsd: null,
+  })
+  return out.sort((a, b) => (a.at || 0) - (b.at || 0))
 }
 
 
@@ -278,7 +282,7 @@ export function buildView(a) {
       subagentsOn: settings.subagentRouting,
       history: historyOf(R, routing),
       estSavedUsdTotal: s && isNum(s.est_saved_usd) ? s.est_saved_usd : null,
-      counts: s ? { prompts: s.prompts, routed: s.routed, kept: s.kept, noDecision: s.no_decision } : null,
+      counts: s ? { prompts: s.prompts, routed: s.routed, kept: s.kept, noDecision: s.no_decision, promptsRated: s.routed + s.kept, subagentsRated: R?.subagentsRated || 0 } : null,
     },
     budget: { unit: null, limit: null, spentUsd: meterUsd, spentPct: null, forecast: null, status: 'none', suggestion: null },
     cache: {
@@ -304,6 +308,8 @@ export function buildView(a) {
   if (stateModule) {
     try {
       const merged = mergeState(view, stateModule.getView(a.sessionId || null))
+      
+      if (settings.forecastSource === 'server') merged.routing = { ...merged.routing, history: view.routing.history, counts: view.routing.counts }
       
       const done = entry ? { ...merged, cache: view.cache } : merged
       return { ...done, plan: settlePlan(done.plan, nowMs) }

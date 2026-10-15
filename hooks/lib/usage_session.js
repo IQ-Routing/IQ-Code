@@ -121,10 +121,10 @@ export function newUsageSession(report = null) {
   function finalize(rec) {
     const facts = pending.get(rec) || []
     pending.delete(rec)
-    const eligible = !!(rec.routed || rec.touched)
+    const eligible = rec.userOverride !== true && !!(rec.routed || rec.touched)
     const promptPriced = rec.priced === true && facts.every((f) => f.complete && f.pricing && finite(f.pricing.actualUsd) && finite(f.pricing.namedUsd) && f.billingMode !== 'unknown')
     const index = facts.length ? ++nextPromptIndex : nextPromptIndex
-    for (const f of facts) commit(f, eligible, promptPriced, rec.phase, index)
+    for (const f of facts) commit(rec.userOverride ? { ...f, changed: false } : f, eligible, promptPriced, rec.userOverride ? 'kept' : rec.phase, index)
   }
   function skipNoUsage({ at, billingMode = activeBillingMode, familiesExhaustedCount = 0, reportEligible = false, setting = 'auto' } = {}) {
     receipt.skipNoUsage()

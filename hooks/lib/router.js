@@ -1,7 +1,7 @@
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 
-import { dayOf, isoOf } from './util.js'
-import { validateAnswer, rankOf, sameModel, displayModel, effortLabel, sameChoice, canonicalModel, applicableChoice, supportsEffort, effortRaise } from './models.js'
+import { dayOf, isoOf, sha256Hex } from './util.js'
+import { validateAnswer, rankOf, sameModel, displayModel, effortLabel, sameChoice, canonicalModel, applicableChoice, supportsEffort, effortRaise, modelRaise } from './models.js'
 import { DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, cleanText, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
 import { VERSION } from './pins.js'
 import { noUsageLine, NO_USAGE_FALLBACK, windowReset } from './format.js'
@@ -91,6 +91,8 @@ export function newRouter() {
     deadlineMs: COLD_DEADLINE_MS,
     resetNextRoute: false, 
     recent: [], 
+    subagentRecent: [], 
+    subagentsRated: 0,
     killed: false, 
     cardBad: false, 
     hasKey: false,
@@ -103,6 +105,10 @@ export function newRouter() {
     pauseNoted: false,
     routeHold: null,
     failureNotices: new Set(), 
+    routingRefused: false, 
+    routingReply: 0,
+    lastAppliedPick: null, 
+    agentPicks: new Map(), 
     named: null, 
     current: null, 
     last: null, 
@@ -119,6 +125,79 @@ export function newRouter() {
     compactions: 0,
     ttlKnown: false, 
   }
+}
+
+
+export function continuationIds(e, structured = false) {
+  if (!structured && ['composer', 'bridge'].includes(e?.origin?.kind)) return []
+  const ids = structured ? [e?.agentId, e?.taskId] : []
+  const context = Array.isArray(e?.context) ? e.context : [e?.context]
+  const texts = [e?.text, ...context.map(value => typeof value === 'string' ? value : value?.text)]
+  for (const text of texts) {
+    if (typeof text !== 'string') continue
+    for (const match of text.matchAll(/<agent-message\b[^>]*\bfrom=["']([^"']{1,128})["'][^>]*>([\s\S]*?)<\/agent-message\s*>/g)) {
+      if (/\[Subagent hand-back\]/i.test(match[2])) ids.push(match[1])
+    }
+    for (const envelope of text.matchAll(/<task-notification\b[^>]*>([\s\S]*?)<\/task-notification\s*>/g)) {
+      for (const match of envelope[1].matchAll(/<task-id>\s*([^<>\s]{1,128})\s*<\/task-id>/g)) ids.push(match[1])
+    }
+  }
+  return ids.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 128)
+}
+
+
+export function carryEligible(e) {
+  if (continuationIds(e).length > 0) return true
+  if (e?.origin?.kind !== 'composer') return false
+  const text = turnText(e?.text)
+  return text !== null && text !== '' && trivialTurn(e.text)
+}
+
+export function rememberSpawnPick(R, pick, e, result) {
+  for (const id of [...continuationIds(e, true), ...continuationIds(result, true)]) {
+    R.agentPicks.delete(id)
+    R.agentPicks.set(id, pick || null)
+    if (R.agentPicks.size > 128) R.agentPicks.delete(R.agentPicks.keys().next().value)
+  }
+}
+
+export function carryPick(R, e) {
+  for (const id of continuationIds(e)) if (R.agentPicks.has(id)) return R.agentPicks.get(id)
+  return R.lastAppliedPick
+}
+
+
+export async function fingerprintKey(key) {
+  return typeof key === 'string' && key.trim() !== '' ? sha256Hex(new TextEncoder().encode(key.trim())) : null
+}
+
+export function carryReason(R, pick, nowMs, fingerprint) {
+  if (statusOf(R, nowMs) !== 'on' || R.routingRefused || R.pause || R.backoffUntil > nowMs ||
+      !fingerprint || !pick.keyFingerprint || pick.keyFingerprint !== fingerprint) return 'carry_unauthorized'
+  if (!Number.isFinite(pick.decisionMs) || nowMs < pick.decisionMs || nowMs - pick.decisionMs > 30 * 60 * 1000) return 'carry_expired'
+  return null
+}
+
+
+export function noteRoutingReply(R, kind, valid = false) {
+  R.routingReply = (R.routingReply || 0) + 1
+  if (['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind)) R.routingRefused = true
+  else if (kind === 'ok' && valid) {
+    R.routingRefused = false
+    if (R.pause?.posted === true) R.pause = null
+  }
+  return R.routingReply
+}
+
+export function settleCarried(R, rec, pick) {
+  rec.named = { ...pick.named }
+  rec.pickEpochs = { ...pick.epochs }
+  rec.pricedAs = pick.pricedAs
+  
+  rec.counted = false
+  settleDecision(R, rec, { phase: 'applied', source: 'local', reason: 'carried_forward',
+    choice: { ...pick.choice }, tier: null, stay: null, block: null, error: null })
+  rec.waitMs = 0
 }
 
 
@@ -250,7 +329,7 @@ export function planSubmit(R, nowMs, ttlMs, limits = R.limitFacts) {
 
 
 export function decide(R, c) {
-  const named = { model: c.named.model, effort: c.named.effort === undefined ? null : c.named.effort }
+  const named = { ...c.named, effort: c.named.effort === undefined ? null : c.named.effort }
   const d = { phase: 'kept', source: 'none', reason: 'error', tier: null, choice: named, stay: null, block: null, error: null }
   const answer = validateAnswer(c.est && c.est.block, named)
   if (!answer.ok) return { ...d, phase: 'error', error: 'no_rating', block: 'rejected:' + answer.why }
@@ -262,7 +341,7 @@ export function decide(R, c) {
   
   if (answer.stay) {
     const current = R.last
-    if (!current || rankOf(current.model) === null || rankOf(current.model) > rankOf(named.model)) return { ...d, phase: 'error', error: 'no_rating' }
+    if (!current || !validateAnswer({ ...c.est.block, model: current.model }, named).ok) return { ...d, phase: 'error', error: 'no_rating' }
     choice = { model: current.model, effort: current.effort }
     d.stay = { decision: 'hold' }
   }
@@ -290,6 +369,7 @@ export function settleDecision(R, rec, d) {
   rec.block = d.block
   rec.error = d.error
   rec.routed = d.phase === 'applied'
+  if (!rec.routed) R.lastAppliedPick = null
   if (d.phase === 'applied' || d.phase === 'kept') R.lastError = null
   else if (d.error) R.lastError = d.error
   if (rec.counted) {
@@ -313,6 +393,7 @@ export function settleNone(R, rec, phase, reason, error) {
     rec.chosen = { model: n.model, effort: effortLabel(n.effort) }
   }
   rec.routed = false
+  R.lastAppliedPick = null
   if (error) R.lastError = error
   if (rec.counted && (phase === 'timeout' || phase === 'error')) {
     R.counters.noDecision += 1
@@ -325,6 +406,12 @@ export function settleNone(R, rec, phase, reason, error) {
 
 
 export function settlePause(R, rec, kind, nowMs) {
+  
+  if (rec.replySequence != null && rec.replySequence !== R.routingReply) {
+    settleNone(R, rec, 'paused', 'paused')
+    return
+  }
+  if (kind !== 'no_usage') R.routingRefused = true
   if (LIMIT_AWARE_ENABLED && kind === 'no_usage') {
     R.pause = { kind }
     R.noUsage = true
@@ -337,6 +424,27 @@ export function settlePause(R, rec, kind, nowMs) {
   else R.pause = { kind, posted: true, untilMs: kind === 'free_daily' ? nextUtcDayMs(nowMs) : nextUtcMonthMs(nowMs) }
   R.pauseNoted = true 
   settleNone(R, rec, 'paused', 'paused', kind === 'plan' ? 'plan_required' : kind === 'auth' ? 'key_rejected' : kind === 'free_quota' ? FREE_ROUTING.monthlyCode : kind === 'free_daily' ? FREE_ROUTING.dailyCode : 'allowance_exceeded')
+}
+
+
+export function settleUserChoice(R, rec, named) {
+  if (rec.counted && rec.phase === 'applied') {
+    R.counters.routed -= 1
+    R.counters.kept += 1
+    const by = R.counters.byModel
+    by[rec.chosen.model] = (by[rec.chosen.model] || 1) - 1
+    if (by[rec.chosen.model] <= 0) delete by[rec.chosen.model]
+    bump(by, named.model)
+  }
+  rec.named = { ...named }
+  rec.routed = false
+  rec.touched = false
+  rec.phase = 'kept'
+  rec.source = 'none'
+  rec.reason = 'user_choice'
+  rec.choice = { ...named }
+  rec.chosen = { model: named.model, effort: effortLabel(named.effort) }
+  R.lastAppliedPick = null
 }
 
 
@@ -357,6 +465,7 @@ export function settleRefused(R, rec) {
   rec.reason = 'error'
   rec.error = 'rewrite_refused'
   rec.routed = false
+  R.lastAppliedPick = null
   rec.choice = { model: n.model, effort: n.effort === undefined ? null : n.effort }
   rec.chosen = { model: n.model, effort: effortLabel(n.effort) }
   R.lastError = 'rewrite_refused'
@@ -495,7 +604,7 @@ export function noteMainStep(R, { model, effort, startMs, endMs, usage, routed, 
 export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, changed, effort, writeTtl, advisorCalls, measured: recorded }) {
   rec.steps += 1
   const m = usage.model || model
-  const diverged = !rec.localSkipped && rec.reason !== 'trivial_turn' && (changed === true || prev?.routed === true)
+  const diverged = rec.userOverride !== true && !rec.localSkipped && rec.reason !== 'trivial_turn' && (changed === true || prev?.routed === true)
   if (diverged) rec.touched = true
   const measured = recorded || measureCall(pricer, { model: m, effort: effort ?? rec.chosen?.effort, named: rec.named, usage, main: true,
     switched: diverged, writeTtl: writeTtl === undefined ? ttlMs / 1000 : writeTtl, advisorCalls,
@@ -513,7 +622,7 @@ export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, c
   if (measured.baseline_usd !== null) rec.usdNamed += measured.baseline_usd
   if (typeof measured.rebuild_debit_usd === 'number' && Number.isFinite(measured.rebuild_debit_usd)) {
     rec.rebuildUsd = (rec.rebuildUsd || 0) + measured.rebuild_debit_usd
-    if (measured.rebuild_debit_usd > 0) rec.touched = true
+    if (measured.rebuild_debit_usd > 0 && rec.userOverride !== true) rec.touched = true
   }
   if (!measured.complete) rec.priced = false
   if (typeof measured.saved_usd === 'number' && Number.isFinite(measured.saved_usd)) {
@@ -525,6 +634,7 @@ export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, c
 
 
 export function recSaving(rec) {
+  if (rec.userOverride === true) return null
   if (rec.localSkipped || rec.reason === 'trivial_turn') return rec.steps > 0 && rec.rebuildUsd > 0 ? -rec.rebuildUsd : null
   return (rec.routed || rec.touched) && rec.priced && rec.steps > 0 ? rec.savedUsd : null
 }
@@ -534,7 +644,7 @@ export function noteTurnDone(R, rec) {
   if (rec.done) return
   rec.done = true
   const s = recSaving(rec)
-  if (s !== null && (rec.counted || s < 0)) R.counters.savedUsd = (R.counters.savedUsd || 0) + s
+  if (s !== null && (rec.counted || rec.reason === 'carried_forward' || s < 0)) R.counters.savedUsd = (R.counters.savedUsd || 0) + s
 }
 
 
@@ -551,7 +661,7 @@ export function routingState(R, nowMs) {
     status,
     pause_until: status === 'paused_allowance' ? ymdUtc(R.pause.untilMs) : null,
     ...(status === 'paused_no_usage' ? { no_usage_reset: R.limitFacts && R.limitFacts.next_reset } : {}),
-    pause_reply: status === 'paused_plan' && R.pause.posted === true, 
+    pause_reply: status === 'paused_plan' && R.pause?.posted === true, 
     named: R.named ? { model: R.named.model, effort: effortLabel(R.named.effort) } : null,
     current: cur
       ? {
@@ -643,7 +753,7 @@ export function lineFor(rec, nowMs, R) {
   }
   switch (rec.phase) {
     case 'applied':
-      return 'iq-route: ' + model + (rec.chosen.effort ? ' · ' + rec.chosen.effort + ' thinking' : '') + ' (IQ rated it ' + rec.tier + ')' + (effortRaise(rec.named?.effort, rec.chosen.effort) ? ' · ' + effortRaise(rec.named.effort, rec.chosen.effort) : '')
+      return 'iq-route: ' + model + (rec.chosen.effort ? ' · ' + rec.chosen.effort + ' thinking' : '') + ' (IQ rated it ' + rec.tier + ')' + [modelRaise(rec.named?.model, rec.chosen.model), effortRaise(rec.named?.effort, rec.chosen.effort)].filter(Boolean).map(raise => ' · ' + raise).join('')
     case 'kept':
       if (rec.reason === 'not_above_named') return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (already at or below IQ\'s rating)'
       return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (IQ rated it ' + rec.tier + ')'

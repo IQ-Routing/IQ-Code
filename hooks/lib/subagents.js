@@ -1,6 +1,6 @@
 
 
-import { canonicalModel, sameModel, displayModel, familyOf, validateAnswer, capEffort, supportedEffort, applicableChoice } from './models.js'
+import { canonicalModel, sameModel, displayModel, familyOf, validateAnswer, capEffort, supportedEffort, applicableChoice, rankOf } from './models.js'
 const ALIASES = { haiku: 'claude-haiku-4-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' }
 const HAIKU55 = 'claude-haiku-5-5'
 const HAIKU45 = 'claude-haiku-4-5'
@@ -46,7 +46,12 @@ export const SUB_TEXT = {
 
 export function resolveBase(requested, parentModel, host = {}) {
   const r = typeof requested === 'string' ? requested.trim().toLowerCase() : ''
-  const model = r === '' || r === 'inherit' ? canonicalModel(parentModel) : canonicalModel(r)
+  let model = r === '' || r === 'inherit' ? canonicalModel(parentModel) : canonicalModel(r)
+  
+  
+  model = model.replace(/@20\d{6}$/, '')
+  const bedrock = /^(?:[a-z0-9-]+\.)?anthropic\.(claude-(?:opus|sonnet|haiku)-\d+(?:-\d{1,2})?)-v\d+:\d+$/.exec(model)
+  if (bedrock) model = bedrock[1]
   if (model === 'haiku') return haikuAlias(host)
   if (Object.prototype.hasOwnProperty.call(ALIASES, model)) return ALIASES[model]
   return model
@@ -60,9 +65,30 @@ export function aliasOf(model) {
 
 
 
+export function safeSpawnModel(model, host = {}) {
+  const exact = resolveBase(model, model, host)
+  if (host.provider !== 'anthropic') return aliasOf(exact)
+  return exact === HAIKU45 ? HAIKU55 : exact
+}
+
+
+
+
+export function workflowSkipReason(spawn) {
+  if (!spawn.workflow) return null
+  const prompt = typeof spawn.prompt === 'string' ? spawn.prompt.trim() : ''
+  if (!prompt) return 'workflow_brief_unavailable'
+  const bracketed = /^(?:\[[\s\S]*\]|<[\s\S]*>)$/.test(prompt)
+  const unavailable = /\b(?:hidden|redacted|withheld|placeholder|unavailable)\b|not (?:available|visible|exposed)/i
+  if (bracketed && /\b(?:workflow|script|prompt)\b/i.test(prompt) && unavailable.test(prompt)) return 'workflow_brief_hidden'
+  return null
+}
+
+
+
 
 export function planSubagent(a) {
-  const base = { model: canonicalModel(a.base.model), effort: a.base.effort ?? null }
+  const base = { model: canonicalModel(a.base.model), effort: a.base.effort ?? null, modelExplicit: a.base.modelExplicit }
   let choice = { model: base.model, effort: null }
   let reason = 'decision_unavailable'
   let fromIq = false
@@ -74,7 +100,7 @@ export function planSubagent(a) {
     }
     reason = answer.reason
   }
-  return { model: choice.model, effort: choice.effort, action: sameModel(choice.model, base.model) ? 'keep' : 'down', reason, fromIq,
+  return { model: choice.model, effort: choice.effort, action: sameModel(choice.model, base.model) ? 'keep' : rankOf(choice.model) > rankOf(base.model) ? 'up' : 'down', reason, fromIq,
     explicitEffort: a.explicitEffort ?? null }
 }
 
@@ -96,7 +122,8 @@ export function gateSpawn(g, spawn) {
   if (!g.hasKey) return 'no_key'
   if (g.errorsOff || g.stopped) return 'paused_errors'
   if (spawn.fork === true) return 'fork' 
-  if (spawn.workflow) return 'workflow' 
+  const workflowSkip = workflowSkipReason(spawn)
+  if (workflowSkip) return workflowSkip
   if (spawn.isTeammate === true) return 'teammate'
   return null
 }

@@ -34,10 +34,85 @@ export async function trustedSettingsHome(access) {
   try { return homeFrom(undefined, await access.home()) } catch (_) { return null }
 }
 
-export async function writeTrustedSettings(access, text) {
+
+
+const SETTINGS_TRANSACTION = `
+const fs = require('node:fs'), path = require('node:path');
+const target = process.argv[1], patch = JSON.parse(process.argv[2]);
+const lock = target + '.lock';
+(async () => {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  let fd;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try { fd = fs.openSync(lock, 'wx', 0o600); break; }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > 10000) { fs.unlinkSync(lock); continue; }
+      } catch (lockError) { if (lockError.code === 'ENOENT') continue; throw lockError; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  if (fd === undefined) throw Error('settings_lock_busy');
+  const temporary = target + '.' + process.pid + '.tmp';
+  try {
+    let current = {}, recovered = false;
+    try { current = JSON.parse(fs.readFileSync(target, 'utf8')); }
+    catch (error) { if (error instanceof SyntaxError) recovered = true; else if (error.code !== 'ENOENT') throw error; }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true;
+    if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false };
+    const merged = { ...current, ...patch, v: 1 };
+    delete merged.subagentRouting; // session-only: never saved
+    fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600 });
+    fs.renameSync(temporary, target);
+    process.stdout.write(JSON.stringify(Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))));
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (_) {}
+    fs.closeSync(fd);
+    fs.unlinkSync(lock);
+  }
+})().catch(() => { process.exitCode = 1; });
+`
+
+export async function writeTrustedSettings(access, text, patch) {
   const home = await trustedSettingsHome(access)
   if (!home) throw new Error('settings_home_untrusted')
-  await access.write(pathIn(home, '.claude/iq/settings.json'), text)
+  const changes = patch === undefined ? JSON.parse(text) : patch
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('settings_patch_invalid')
+  const target = pathIn(home, '.claude/iq/settings.json')
+  
+  const candidates = /^[A-Za-z]:[\\/]/.test(home)
+    ? [home.slice(0, 2) + '\\Program Files\\nodejs\\node.exe']
+    : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
+  if (typeof access.run === 'function') for (const executable of candidates) {
+    try {
+      const result = await access.run([executable, '-e', SETTINGS_TRANSACTION, target, JSON.stringify(changes)], { timeoutMs: 5000, env: { NODE_OPTIONS: '', NODE_PATH: '' } })
+      if (result?.exitCode === 0) return JSON.parse(result.stdout || '{}')
+      break
+    } catch (error) {
+      if (error?.code === 'ENOENT' || /\bENOENT\b/.test(String(error?.message))) continue
+      break
+    }
+  }
+  
+  
+  
+  const exists = await access.exists(target)
+  if (exists !== true && exists !== false) throw new Error('settings_read_unavailable')
+  let current = {}, recovered = false
+  if (exists) {
+    const stored = await access.read(target)
+    try { current = JSON.parse(stored) }
+    catch (error) { if (error instanceof SyntaxError) recovered = true; else throw error }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true
+  }
+  
+  
+  if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false }
+  const merged = { ...current, ...changes, v: 1 }
+  delete merged.subagentRouting 
+  await access.write(target, JSON.stringify(merged, null, 1) + '\n')
+  return Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))
 }
 
 
@@ -46,7 +121,7 @@ export async function persistPlanRestriction(kind, access, state) {
   if (!['plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind) || state.getSetting('keepRoutingOn') !== true) return false
   try {
     if (!(await trustedSettingsHome(access))) return false
-    return await state.saveSettings({ routingEligible: false }, (text) => writeTrustedSettings(access, text),
+    return await state.saveSettings({ routingEligible: false }, (text, patch) => writeTrustedSettings(access, text, patch),
       () => state.getSetting('keepRoutingOn') === true)
   } catch (_) { return false }
 }

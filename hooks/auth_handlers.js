@@ -21,7 +21,7 @@ export const authCancel = () => { commandGeneration += 1; if (A) A.cancel() }
 function access($) {
   return { configured: () => H.pluginKey(), home: async () => homeFrom(await $.env.get('USERPROFILE'), await $.env.get('HOME')),
     exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), user: () => $.settings.read({ source: 'user' }),
-    readSettings: (source) => $.settings.read({ source }), write: (path, text) => $.fs.write(path, text),
+    readSettings: (source) => $.settings.read({ source }), write: (path, text) => $.fs.write(path, text), run: (argv, init) => $.process.run(argv, init),
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'), disabled: () => $.env.get('IQ_ROUTER_DISABLED'),
     cwd: () => $.session.cwd(), settings: () => $.settings.read(), force5m: () => $.env.get('FORCE_PROMPT_CACHING_5M'),
     envTtl: () => $.env.get('CLAUDE_CODE_PROMPT_CACHE_TTL'), oneHour: () => $.env.get('ENABLE_PROMPT_CACHING_1H'),
@@ -66,7 +66,7 @@ async function controller($) {
     saveSettings: async (patch, stillCurrent = () => true) => {
       const currentHome = await trustedSettingsHome(io)
       if (!currentHome) return false
-      return State.saveSettings(patch, (text) => writeTrustedSettings(io, text), stillCurrent)
+      return State.saveSettings(patch, (text, patch) => writeTrustedSettings(io, text, patch), stillCurrent)
     },
     readKey: () => readKey(io), installKey: (key, live) => host.installKey(key, live),
     activate: (key, live) => host.activate(key, live, { ...io, blocked: () => State.getSetting('authBlocked') === true }),

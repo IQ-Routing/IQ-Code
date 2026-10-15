@@ -74,6 +74,28 @@ export function explicitEffort({ model, env, sources }) {
 
 
 
+export function explicitModel({ env, sources, runtimeModel, startupModel, resolveModel = canonicalModel } = {}) {
+  for (const value of [runtimeModel, env, sources?.policy?.model, sources?.flag?.model]) {
+    const model = canonicalModel(value)
+    if (model) return model
+  }
+  const startup = canonicalModel(startupModel)
+  if (!startup) return null
+  
+  
+  try {
+    const resolved = canonicalModel(resolveModel(startup))
+    if (resolved && ['user', 'project', 'local'].some(source => {
+      const setting = sources?.[source]?.model
+      return canonicalModel(setting) !== '' && sameModel(resolved, resolveModel(setting))
+    })) return null
+  } catch (_) {}
+  return startup
+}
+
+
+
+
 export function effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit = false, prompt } = {}) {
   const configured = explicitEffort({ model, env, sources })
   const runtime = EFFORTS.includes(runtimeEffort) || Number.isSafeInteger(runtimeEffort) && runtimeEffort >= 0 ? runtimeEffort : null
@@ -120,6 +142,11 @@ export function supportedEffort(model, effort) {
 export function effortRaise(from, to) {
   const a = effortRank(from), b = effortRank(to)
   return a !== null && b !== null && b > a ? 'raised from ' + from : ''
+}
+
+export function modelRaise(from, to) {
+  const a = rankOf(from), b = rankOf(to)
+  return a !== null && b !== null && b > a ? 'raised from ' + displayModel(from) : ''
 }
 
 
@@ -208,7 +235,9 @@ export function validateAnswer(block, named) {
   if (!/^claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:-\d{1,2})?$/.test(canonicalModel(block.model))) return { ok: false, why: 'malformed_model' }
   const nr = rankOf(named.model)
   const mr = rankOf(block.model)
-  if (nr === null || mr === null || mr > nr) return { ok: false, why: 'model_above_named' }
+  if (nr === null || mr === null ||
+      familyOf(block.model) === 'fable' && !sameModel(block.model, named.model) ||
+      mr > nr && !(named.modelExplicit === false && GUESS_MODELS.includes(canonicalModel(block.model)))) return { ok: false, why: 'model_above_named' }
   const model = sameModel(block.model, named.model) ? named.model : canonicalModel(block.model)
   const effort = named.effortExplicit === true ? capEffort(block.effort, named.effort) : block.effort
   return { ok: true, model, effort: supportedEffort(model, effort), stay: block.stay, reason: block.reason_code,

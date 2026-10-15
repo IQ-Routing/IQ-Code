@@ -11,7 +11,7 @@ import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 
 import { paneModel, paneNote, subagentShare, measuredDollars, floorMark, usd, count, plural, percent, resetText, stamp, LABEL, noUsageLine, windowReset, WINDOW_RESET } from './format.js'
 import { FORCE_SERVER } from './runtime_mode.js'
-import { effortRaise } from './models.js'
+import { effortRaise, modelRaise } from './models.js'
 
 import { displayText, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, FREE_ROUTING } from './iq_client.js'
 
@@ -160,7 +160,7 @@ function badgeOf(r) {
   if (r.status !== 'on') return statusLine(r)
   const cur = r.current
   if (!cur) return { text: 'IQ routing on', style: 'route_wait' }
-  const raised = effortRaise(r.named?.effort, cur.chosen?.effort)
+  const raised = [modelRaise(r.named?.model, cur.chosen?.model), effortRaise(r.named?.effort, cur.chosen?.effort)].filter(Boolean).join(SEP)
   if (cur.phase === 'applied' && raised) return { text: 'IQ → ' + modelLabel(cur.chosen) + ' thinking' + (isStr(cur.tier) ? ' (IQ rated it ' + cur.tier + ')' : '') + SEP + raised, style: 'route_down' }
   switch (cur.phase) {
     case 'deciding':

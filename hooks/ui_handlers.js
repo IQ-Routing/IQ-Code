@@ -414,10 +414,11 @@ async function persistSetting($, key, value) {
   if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) return
   if (key === 'keepRoutingOn' && value !== false && !(H.keepRoutingEnabled && H.keepRoutingEnabled())) return
   const cleaned = cleanSettings({ ...STATE.getView().settings, [key]: value })
-  const io = { home: () => userHome($), readSettings: (source) => $.settings.read({ source }), write: (path, text) => $.fs.write(path, text) }
+  const io = { home: () => userHome($), readSettings: (source) => $.settings.read({ source }), exists: (path) => $.fs.exists(path),
+    read: (path) => $.fs.read(path), write: (path, text) => $.fs.write(path, text), run: (argv, init) => $.process.run(argv, init) }
   const home = await trustedSettingsHome(io)
   const patch = { [key]: cleaned[key], ...(key === 'keepRoutingOn' && cleaned[key] === true ? { routingEligible: true } : {}) }
-  if (home) await STATE.saveSettings(patch, (text) => writeTrustedSettings(io, text))
+  if (home) await STATE.saveSettings(patch, (text, patch) => writeTrustedSettings(io, text, patch))
   U.settings = cleanSettings(STATE.getView().settings)
   if (LIMIT_AWARE_ENABLED && ['planType', 'planTier', 'allowFable', 'fableBilling'].includes(key) && typeof H.refreshLimits === 'function') await H.refreshLimits(limitAccess($))
 

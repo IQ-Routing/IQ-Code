@@ -32,7 +32,7 @@ const isNum = (x) => typeof x === 'number' && Number.isFinite(x)
 const r6 = (x) => (isNum(x) ? Math.round(x * 1e6) / 1e6 : null)
 
 
-const store = { settings: { ...DEFAULT_SETTINGS }, sessions: new Map(), listeners: new Set(), persist: null, pending: false, current: '' }
+const store = { settings: { ...DEFAULT_SETTINGS }, sessions: new Map(), listeners: new Set(), persist: null, pending: false, pendingPatch: {}, current: '' }
 let dashboard = null
 let pendingDashboard = undefined
 let sessionChoices = {}
@@ -87,7 +87,7 @@ export function setLimitReading(value) {
   const next = cleanLimitReading(value)
   if (JSON.stringify(next) === JSON.stringify(limitReading)) return false
   limitReading = next
-  persistNow()
+  persistNow({ limitReading })
   return true
 }
 function cleanLimitReading(value) {
@@ -211,6 +211,7 @@ function valid(k, v) {
 export function setSetting(k, v) {
   if (!SETTING_KEYS.includes(k) || !valid(k, v)) return false
   if (k === 'defaultTaskBudget' && getSetting('budgetUnit') === 'plan_pct' && v > 100) return false
+  const before = { ...store.settings }
   const wasDashboard = dashboardSources()[k] === true
   let pairedChanged = false
   if (DASHBOARD_SETTING_KEYS.includes(k)) {
@@ -228,12 +229,12 @@ export function setSetting(k, v) {
     sessionChoices[k] = v
   }
   if (store.settings[k] === v) {
-    if (pairedChanged) persistNow()
+    if (pairedChanged) persistNow(changedSettings(before))
     if (wasDashboard || pairedChanged) notify()
     return false 
   }
   store.settings[k] = v
-  if (!SESSION_ONLY_KEYS.includes(k)) persistNow()
+  if (!SESSION_ONLY_KEYS.includes(k)) persistNow(changedSettings(before))
   notify()
   return true
 }
@@ -250,7 +251,19 @@ export function loadSettings(obj) {
   store.settings = next
   if (LIMIT_AWARE_ENABLED && Object.hasOwn(o, 'limitReading')) limitReading = cleanLimitReading(o.limitReading)
   store.pending = false
+  store.pendingPatch = {}
 
+  notify()
+}
+
+
+export function refreshRoutingConsent(obj) {
+  const value = obj && typeof obj === 'object' ? obj : {}
+  for (const key of ['keepRoutingOn', 'authBlocked', 'routingEligible']) {
+    store.settings[key] = valid(key, value[key]) ? value[key] : DEFAULT_SETTINGS[key]
+    delete store.pendingPatch[key]
+  }
+  store.pending = Object.keys(store.pendingPatch).length > 0
   notify()
 }
 
@@ -273,28 +286,42 @@ export function saveSettings(patch, write, guard = () => true) {
     try { for (const [key, value] of Object.entries(values)) setSetting(key, value) }
     finally { store.persist = persistence }
     notify()
+    const actualPatch = { ...store.pendingPatch }
+    for (const [key, value] of Object.entries(values)) if (!SESSION_ONLY_KEYS.includes(key)) actualPatch[key] = value
     try {
-      await write(settingsText())
+      const merged = await write(settingsText(), actualPatch)
       if (guard() !== true) {
         store.settings = before
         sessionChoices = beforeChoices
         
-        try { await write(settingsText()) } catch (_) {
+        const restrictive = { keepRoutingOn: false, authBlocked: true, routingEligible: false }
+        const rollback = Object.fromEntries(Object.keys(actualPatch).map(key => [key, Object.hasOwn(restrictive, key) ? restrictive[key] : key === 'limitReading' ? limitReading : before[key]]))
+        for (const key of Object.keys(restrictive)) if (Object.hasOwn(rollback, key)) store.settings[key] = restrictive[key]
+        try { await write(settingsText(), rollback) } catch (_) {
           store.settings.authBlocked = true
           store.settings.keepRoutingOn = false
-          try { await write(settingsText()) } catch (_) {}
+          try { await write(settingsText(), { authBlocked: true, keepRoutingOn: false }) } catch (_) {}
         }
         notify()
-        store.pending = false
+        clearPending(actualPatch)
         return false
       }
-      store.pending = false
+      
+      let consentChanged = false
+      if (merged && typeof merged === 'object') for (const key of ['keepRoutingOn', 'authBlocked', 'routingEligible']) {
+        if (!Object.hasOwn(values, key) && valid(key, merged[key]) && store.settings[key] !== merged[key]) {
+          store.settings[key] = merged[key]
+          consentChanged = true
+        }
+      }
+      if (consentChanged) notify()
+      clearPending(actualPatch)
       return true
     } catch (_) {
       
       
       if (values.authBlocked !== true && (Object.prototype.hasOwnProperty.call(values, 'keepRoutingOn') || Object.prototype.hasOwnProperty.call(values, 'authBlocked'))) { store.settings = before; sessionChoices = beforeChoices }
-      store.pending = false
+      clearPending(actualPatch)
       notify()
       return false
     }
@@ -304,7 +331,9 @@ export function saveSettings(patch, write, guard = () => true) {
 }
 
 export function flushSettings(write) {
-  return saveSettings({}, async (text) => { if (store.pending) await write(text) })
+  return saveSettings({}, async (text, patch) => {
+    if (Object.keys(patch).length > 0) return write(text, patch)
+  })
 }
 
 export function settingsText() {
@@ -321,18 +350,30 @@ export function setPersistence(fn) {
 
 export function takePendingSettings() {
   if (!store.pending) return null
+  const patch = store.pendingPatch
   store.pending = false
-  return settingsText()
+  store.pendingPatch = {}
+  return JSON.stringify({ v: 1, ...patch }, null, 1) + '\n'
 }
 
-function persistNow() {
-  if (store.persist === null) {
-    store.pending = true
-    return
-  }
+function changedSettings(before) {
+  return Object.fromEntries(SETTING_KEYS.filter(key => !SESSION_ONLY_KEYS.includes(key) && before[key] !== store.settings[key]).map(key => [key, store.settings[key]]))
+}
+
+function clearPending(patch) {
+  for (const [key, value] of Object.entries(patch)) if (store.pendingPatch[key] === value) delete store.pendingPatch[key]
+  store.pending = Object.keys(store.pendingPatch).length > 0
+}
+
+function persistNow(patch) {
+  Object.assign(store.pendingPatch, patch)
+  store.pending = Object.keys(store.pendingPatch).length > 0
+  if (store.persist === null) return
   try {
-    const r = store.persist(settingsText())
-    if (r && typeof r.catch === 'function') r.catch(() => {})
+    const pending = { ...store.pendingPatch }
+    const r = store.persist(settingsText(), pending)
+    if (r && typeof r.then === 'function') r.then(() => clearPending(pending), () => {})
+    else clearPending(pending)
   } catch (_) {
     
   }
@@ -409,5 +450,6 @@ export function resetAll() {
   store.listeners = new Set()
   store.persist = null
   store.pending = false
+  store.pendingPatch = {}
   store.current = ''
 }

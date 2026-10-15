@@ -14,7 +14,7 @@ import { displayText } from './iq_client.js'
 import { SAVINGS_MODES_ENABLED, USAGE_REPORTS_ENABLED, LIMIT_AWARE_ENABLED } from './usage_flags.js'
 import { savingsModes, savingsPlanRows } from './savings_modes.js'
 import { receiptText } from './receipt.js'
-import { effortRaise } from './models.js'
+import { effortRaise, modelRaise } from './models.js'
 
 const SEP = ' · '
 const SHORT = 'API-eq.'
@@ -328,9 +328,39 @@ const REASON = {
   paused: 'routing paused',
 }
 
+const SUBAGENT_REASON = {
+  main_off: 'routing off', off: 'routing off', 'subagents off': 'subagent routing off',
+  headless: 'no interactive session', killed: 'routing disabled', no_key: 'IQ key unavailable',
+  fork: 'fork keeps the parent model', teammate: 'teammate keeps its model',
+  workflow_remote: 'remote Workflow agent', workflow_brief_hidden: 'Workflow brief hidden', workflow_brief_unavailable: 'Workflow brief unavailable',
+  paused_errors: 'routing paused after errors', paused_rate_limited: 'waiting before retrying IQ', rate_limited: 'waiting before retrying IQ',
+  paused_plan: 'IQ plan required', plan_required: 'IQ plan required', paused_allowance: 'IQ allowance reached', allowance: 'IQ allowance reached',
+  free_quota: 'IQ allowance reached', free_daily: 'daily IQ allowance reached', auth_required: 'IQ sign-in required',
+  no_usage: 'usage limit reached', paused_no_usage: 'usage limit reached', capacity_full: 'agent routing capacity reached',
+  session_changed: 'session changed', destination_unavailable: 'IQ unavailable', request_unavailable: 'request unavailable',
+  invalid_answer: 'IQ answer unusable', malformed: 'IQ answer unusable', malformed_response: 'IQ answer unusable',
+  spawn_rejected: 'host rejected the model change', spawn_failed: 'agent failed to start', spawn_denied: 'host refused the agent',
+}
+
+function subagentReason(h) {
+  if (h.reason === 'resume_model_retained') return 'kept your model on resume'
+  if (h.reason === 'timeout') return 'no answer in time, kept your model'
+  if (SUBAGENT_REASON[h.reason]) return 'kept your model: ' + SUBAGENT_REASON[h.reason]
+  if (h.phase === 'kept') return 'kept your model'
+  if (h.phase === 'applied') {
+    if (tagOf(h.from) === tagOf(h.to)) return 'kept your model'
+    if (h.from?.model === h.to?.model) return 'changed thinking level'
+    if (h.reason === 'haiku_55_required') return 'Haiku 5.5 required'
+    const rating = /^iq_(simple|medium|complex)$/.exec(h.reason || '')
+    return rating ? rating[1] + ' task' : 'changed model'
+  }
+  return 'no decision, kept your model'
+}
+
 
 export function reasonText(h) {
   if (!h) return ''
+  if (h.scope === 'subagent') return subagentReason(h)
   if (cacheStayText(h)) return cacheStayText(h)
   if (isStr(h.reason) && REASON[h.reason]) return REASON[h.reason]
   if (h.phase === 'applied' && isStr(h.tier)) return h.tier + ' prompt'
@@ -350,9 +380,10 @@ export function historyLine(h) {
   const from = tagOf(h.from) || '?'
   const to = tagOf(h.to) || '?'
   const scope = (SCOPE[h.scope] || 'main') + (isStr(h.agentType) ? ' ' + h.agentType : '')
+  const scopeLabel = scope.length > 17 ? scope.slice(0, 16) + '…' : scope
   const saved = h.measured ? '' : isNum(h.estSavedUsd) ? (h.estSavedUsd < 0 ? 'est. -' + usd(-h.estSavedUsd) : 'est. ' + usd(h.estSavedUsd)) : ''
-  const raised = effortRaise(h.from?.effort, h.to?.effort)
-  return pad(isNum(h.at) ? stamp(h.at) : '-', 14) + pad(scope, 18) + from + ' → ' + to + (reasonText(h) ? SEP + reasonText(h) : '') + (raised ? SEP + raised : '') + (saved ? SEP + saved : '')
+  const raised = [modelRaise(h.from?.model, h.to?.model), effortRaise(h.from?.effort, h.to?.effort)].filter(Boolean).join(SEP)
+  return pad(isNum(h.at) ? stamp(h.at) : '-', 14) + pad(scopeLabel, 18) + from + ' → ' + to + (reasonText(h) ? SEP + reasonText(h) : '') + (raised ? SEP + raised : '') + (saved ? SEP + saved : '')
 }
 
 function homeTab(a) {
@@ -368,7 +399,7 @@ function homeTab(a) {
   const r = a.routingState
   const decision = r?.current && !['deciding', 'off'].includes(r.current.phase) ? r.current : r?.recent?.at(-1)
   if (decision) {
-    const raised = effortRaise(decision.named?.effort ?? r.named?.effort, decision.chosen?.effort)
+    const raised = [modelRaise(decision.named?.model ?? r.named?.model, decision.chosen?.model), effortRaise(decision.named?.effort ?? r.named?.effort, decision.chosen?.effort)].filter(Boolean).join(SEP)
     const detail = [tagOf(decision.chosen), isStr(decision.tier) && decision.tier !== 'kept' ? 'IQ rated it ' + decision.tier : null,
       reasonText(decision), raised].filter(Boolean)
     add('plain', 'Last decision: ' + detail.join(SEP))
@@ -380,6 +411,8 @@ function homeTab(a) {
     add('plain', 'This prompt: ' + spent + (floor ? '+' : '') + ' (' + SHORT + ')' + SEP + plural(prompt.calls, 'call', 'calls'))
   } else add('dim', 'This prompt: no calls yet.')
   add('head', 'This session')
+  const counts = v?.routing?.counts
+  if (counts) add('plain', plural(counts.promptsRated ?? ((counts.routed || 0) + (counts.kept || 0)), 'prompt', 'prompts') + ' rated' + SEP + plural(counts.subagentsRated || 0, 'subagent', 'subagents') + ' rated')
   if (m?.session?.measured) {
     add('plain', measuredSpendLine(m.session.measured) + ' (' + SHORT + ')')
     add(m.session.measured.saved_usd < 0 ? 'warn' : 'plain', 'Saved ' + measuredDollars(m.session.measured.saved_usd) + ' (' + SHORT + ')')
@@ -442,7 +475,11 @@ function routingLines(a, tabs) {
   if (hist.length === 0) L.push({ style: 'dim', text: 'No routing decisions yet this session.' })
   else {
     L.push({ style: 'dim', text: pad('when', 14) + pad('scope', 18) + 'from → to, why' + (a.meter && a.meter.session && a.meter.session.measured ? '' : ', est. saved (' + SHORT + ')') })
-    for (const h of hist) L.push({ style: h.phase === 'applied' ? 'route_down' : 'plain', text: historyLine(a.meter && a.meter.session && a.meter.session.measured ? { ...h, measured: true } : h) })
+    for (const h of hist) {
+      const raised = modelRaise(h.from?.model, h.to?.model) || effortRaise(h.from?.effort, h.to?.effort)
+      const changed = tagOf(h.from) !== tagOf(h.to)
+      L.push({ style: h.phase === 'applied' && changed ? raised ? 'warn' : 'route_down' : 'plain', text: historyLine(a.meter && a.meter.session && a.meter.session.measured ? { ...h, measured: true } : h) })
+    }
   }
   return L
 }

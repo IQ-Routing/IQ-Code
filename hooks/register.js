@@ -33,7 +33,7 @@ import { newUsageSession } from './lib/usage_session.js'
 import { newLimitState, readLimitAuth } from './lib/limit_state.js'
 import { turnBillingMode, modelFamily, limitsBlock } from './lib/limits.js'
 import { FORCE_SERVER } from './lib/runtime_mode.js'
-import { SUB_TEXT } from './lib/subagents.js'
+import { SUB_TEXT, readAliasHost, resolveBase } from './lib/subagents.js'
 import { makePricer, booked, advisorCallsIn, mainPass, latestCacheWriteTtlMs, modelClass, effortClass } from './lib/pricing.js'
 import {
   newTracker,
@@ -60,7 +60,7 @@ import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parse
 import { readKey, validKey, trafficOff, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
 import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
 import { registerAuth, authReset, authEnd, authOff, authCancel } from './auth_handlers.js'
-import { guessEffort, sameModel, sameChoice, canonicalModel, effortFacts, applicableChoice, applyChoice, EFFORTS } from './lib/models.js'
+import { guessEffort, sameModel, sameChoice, canonicalModel, effortFacts, explicitModel, applicableChoice, applyChoice, effortLabel, EFFORTS, validateAnswer } from './lib/models.js'
 import {
   noteRoutingUsage,
   RT_DIR,
@@ -69,6 +69,15 @@ import {
   TEXT,
   newRouter,
   newRecord,
+  carryPick,
+  carryReason,
+  fingerprintKey,
+  noteRoutingReply,
+  carryEligible,
+  rememberSpawnPick,
+  settleCarried,
+  settleUserChoice,
+  statusOf,
   forgetRecord,
   planSubmit,
   fastSubmit,
@@ -120,6 +129,7 @@ function iqAccess($) {
     read: (path) => $.fs.read(path),
     user: () => $.settings.read({ source: 'user' }),
     readSettings: (source) => $.settings.read({ source }),
+    run: (argv, init) => $.process.run(argv, init),
     write: (path, text) => $.fs.write(path, text),
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'),
     disabled: () => $.env.get('IQ_ROUTER_DISABLED'),
@@ -176,6 +186,11 @@ function newRuntime() {
     cwd: null,
     nowMs: 0, 
     explicitEffort: null,
+    explicitModel: null,
+    modelSource: null,
+    modelEpoch: 0,
+    effortEpoch: 0,
+    carryEffort: null,
     requestEpoch: 0,
     planProbe: null, 
     typedPrompts: [], 
@@ -414,6 +429,7 @@ export function register(on, options = {}) {
   registerRoute(on, { getR: () => R, getRM: () => RM, getM: () => M, getT: () => T, pluginKey,
     limitState: currentLimits, refreshLimits: refreshLimitFacts, noUsage, noteNoUsage,
     noteUsageEntitlement: (key, paid) => usageEntitlement(key, paid),
+    writeSubagentDecision: (row, access) => rtAppendRows(access, [row], Date.parse(row.ts)),
     noteHelperPlan: (id, plan) => { if (SAVINGS_MODES_ENABLED || USAGE_REPORTS_ENABLED) { usageHelpers.set(id, { ...plan, prev: null }); if (usageHelpers.size > 128) usageHelpers.delete(usageHelpers.keys().next().value) } },
   })
   
@@ -499,6 +515,16 @@ export function register(on, options = {}) {
     return result
   }).catch(($, e, next) => next(e)) 
 
+  on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
+    const router = R
+    const activePick = R.lastAppliedPick
+    let pick = null
+    try { if (rtLive() && statusOf(R, await $.clock.now()) === 'on') pick = activePick } catch (_) {}
+    const result = await next(e)
+    try { if (router === R && !result?.deny) rememberSpawnPick(R, pick, e, result) } catch (_) {}
+    return result
+  })
+
   on('turn.start', async ($, e, next) => {
     if (M.ready && !M.quiet) {
       try {
@@ -535,6 +561,17 @@ export function register(on, options = {}) {
         key = await stepBegin($, begun.e2)
       } catch (err) {
         countError($, 'turn.step', err)
+      }
+    }
+    
+    if (begun.e2 !== e) {
+      const nowMs = key !== null ? M.nowMs : RM.nowMs
+      const reason = begun.rec?.carry ? carryReason(R, begun.rec.carry, nowMs, begun.carryFingerprint) : null
+      if (reason || R.routingRefused || !rtLive() || statusOf(R, nowMs) !== 'on') {
+        if (reason) { begun.rec.named = { ...begun.namedOriginal }; settleKept(R, begun.rec, reason) }
+        begun.e2 = e
+        begun.changed = false
+        if (key !== null) noteStepStart(e, key, nowMs)
       }
     }
     let result
@@ -653,6 +690,7 @@ export function register(on, options = {}) {
     try {
       if (!M.interactive) {
         M.interactive = true
+        await rtAutoArm($)
         $.ui.invalidate('ui.render')
         await writeStatus($, e)
       }
@@ -744,6 +782,10 @@ export function register(on, options = {}) {
     const result = await next(e)
     if (userOrigin(e) && !result?.deny) {
       const value = String(e.args ?? '').trim().toLowerCase()
+      if (EFFORTS.includes(value) || value === 'auto' || value === 'default') {
+        RM.effortEpoch = (RM.effortEpoch || 0) + 1
+        RM.carryEffort = EFFORTS.includes(value) ? value : null
+      }
       if (EFFORTS.includes(value)) RM.explicitEffort = value
       else if (value === 'auto' || value === 'default') RM.explicitEffort = null
     }
@@ -752,7 +794,25 @@ export function register(on, options = {}) {
 
   on('command.run', { command: 'model' }, async ($, e, next) => {
     const result = await next(e)
-    if (userOrigin(e) && !result?.deny) RM.explicitEffort = null
+    
+    
+    return result
+  })
+
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const result = await next(e)
+    if (typeof e.to_model === 'string' && e.to_model !== '') {
+      RM.modelSource = e.source
+      const explicit = ['picker', 'command', 'sdk'].includes(e.source) &&
+        e.requested_model != null && !['default', 'auto'].includes(String(e.requested_model).trim().toLowerCase())
+      RM.explicitModel = explicit ? e.to_model : null
+      RM.modelEpoch = (RM.modelEpoch || 0) + 1
+      if (['picker', 'command', 'sdk'].includes(e.source)) {
+        RM.explicitEffort = null
+        RM.effortEpoch = (RM.effortEpoch || 0) + 1
+        RM.carryEffort = null
+      }
+    }
     return result
   })
 
@@ -1028,10 +1088,14 @@ async function stepBegin($, e) {
   const nowMs = await $.clock.now()
   M.nowMs = nowMs
   const key = String(e.turnId) + ':' + String(e.index) + ':' + (e.agentId ? String(e.agentId) : '')
-  onStepStart(T, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
-  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort } 
+  noteStepStart(e, key, nowMs)
   $.ui.invalidate('ui.render')
   return key
+}
+
+function noteStepStart(e, key, nowMs) {
+  onStepStart(T, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
+  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort } 
 }
 
 async function stepEnd($, e, key, result, begun = {}) {
@@ -1179,6 +1243,7 @@ async function ensureInteractive($) {
   const s = await safe($.session.surfaces())
   if (Array.isArray(s) && s.length > 0) {
     M.interactive = true
+    await rtAutoArm($)
     $.ui.invalidate('ui.render')
   }
   return M.interactive
@@ -1288,11 +1353,33 @@ async function rtStart($, e) {
   }
   RM.ready = true
   await rtGates($)
-  if (KEEP_ROUTING_ON_ENABLED === true && State.getSetting('keepRoutingOn') === true && State.getSetting('routingEligible') !== false && State.getSetting('authBlocked') !== true && M.interactive) {
-    const generation = sessionGeneration
-    const intent = routingIntent
-    await rtArm(armAccess($), () => generation === sessionGeneration && intent === routingIntent && !sessionOff)
-  }
+  await rtAutoArm($)
+}
+
+
+async function rtAutoArm($) {
+  const generation = sessionGeneration, intent = routingIntent, router = R, runtime = RM
+  const sameSession = () => generation === sessionGeneration && intent === routingIntent && R === router && RM === runtime && !sessionOff
+  const current = () => sameSession() && State.getSetting('keepRoutingOn') === true &&
+    State.getSetting('routingEligible') !== false && State.getSetting('authBlocked') !== true
+  if (KEEP_ROUTING_ON_ENABLED !== true || !M.interactive || !RM.ready || R.armed || !sameSession()) return false
+  let settings = null
+  try {
+    const access = iqAccess($)
+    const home = await trustedSettingsHome(access)
+    if (home) {
+      const path = pathIn(home, '.claude/iq/settings.json')
+      const exists = await access.exists(path)
+      if (exists === true) {
+        const stored = JSON.parse(await access.read(path))
+        if (stored && typeof stored === 'object' && !Array.isArray(stored)) settings = stored
+      } else if (exists === false) settings = {}
+    }
+  } catch (_) {} 
+  if (!sameSession() || settings === null) return false
+  State.refreshRoutingConsent(settings)
+  if (!current()) return false
+  return rtArm(armAccess($), current)
 }
 
 
@@ -1361,6 +1448,8 @@ function rtDisarm() {
   if (R.current && !R.current.decided) settleNone(R, R.current, 'off', 'off')
   R.current = null
   R.named = null
+  R.lastAppliedPick = null
+  R.agentPicks.clear()
 }
 
 
@@ -1392,7 +1481,11 @@ async function rtNamedHint($, prompt = '') {
   const sources = {}
   for (const name of ['user', 'project', 'local', 'flag', 'policy']) sources[name] = effortSettings(await safe($.settings.read({ source: name })))
   const runtimeEffort = RM.explicitEffort ?? undefined
-  return { model, ...effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit: RM.explicitEffort != null, prompt }) }
+  const host = await readAliasHost({ version: () => $.session.version(), bedrock: () => $.env.get('CLAUDE_CODE_USE_BEDROCK'),
+    vertex: () => $.env.get('CLAUDE_CODE_USE_VERTEX'), foundry: () => $.env.get('CLAUDE_CODE_USE_FOUNDRY'), baseUrl: () => $.env.get('ANTHROPIC_BASE_URL') })
+  const modelExplicit = explicitModel({ env: await safe($.env.get('ANTHROPIC_MODEL')), sources, runtimeModel: RM.explicitModel,
+    startupModel: model, resolveModel: value => resolveBase(value, model, host) }) !== null
+  return { model, modelExplicit, ...effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit: RM.explicitEffort != null, prompt }) }
 }
 
 
@@ -1404,12 +1497,14 @@ const rtIsHuman = (e) => {
 
 
 async function rtSubmit($, e) {
-  if (!RM.ready || !R.armed || !rtIsHuman(e)) return null 
+  if (!RM.ready || !R.armed || e.agentId != null || (!rtIsHuman(e) && !carryEligible(e))) return null 
   if (e.turnId !== undefined) return null 
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
-  if (trivialTurn(e.text)) {
+  if (carryEligible(e) || trivialTurn(e.text)) {
     const rec = newRecord(R, { nowMs, sessionModel: await safe($.session.model()) })
+    rec.carry = carryEligible(e) ? carryPick(R, e) : null
+    rec.effortHint = await rtNamedHint($, e.text)
     rec.local = { action: 'local', phase: 'kept', reason: 'trivial_turn', source: 'none', counted: false }
     const sub = { rec, prev: R.current, runtime: RM, router: R, skipped: true }
     R.current = rec
@@ -1447,6 +1542,7 @@ async function rtSubmit($, e) {
     rec.local = { action: 'local', phase: 'error', reason: 'error', source: 'none', counted: true, error: 'no_key' }
     return sub
   }
+  rec.keyFingerprint = await fingerprintKey(key)
   
   rec.result = null
   let finish
@@ -1524,6 +1620,7 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
     const named = await rtNamedHint($, text)
     if (rec.explicitEffort != null) { named.effort = rec.explicitEffort; named.effortExplicit = true }
     rec.effortHint = named
+    if (rec.named) rec.named.modelExplicit = named.modelExplicit
     if (!rec.named && named.effortExplicit === true) rec.explicitEffort = named.effort
     const observed = await safe($.session.usage())
     const limits = LIMIT_AWARE_ENABLED ? await refreshLimits($) : null
@@ -1561,7 +1658,7 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
     rec.latencyMs = transport?.latencyMs ?? Math.max(0, (await $.clock.now()) - t0)
     if (transport?.error) throw transport.error
     const res = transport?.response ?? null
-    if (LIMIT_AWARE_ENABLED && (RM !== runtime || RM.requestEpoch !== requestEpoch)) return { kind: 'error', code: 'traffic_disabled', latencyMs: 0, doneMs: runtime.nowMs }
+    if (RM !== runtime || RM.requestEpoch !== requestEpoch) return { kind: 'error', code: 'traffic_disabled', latencyMs: 0, doneMs: runtime.nowMs }
     if (LIMIT_AWARE_ENABLED && noUsage(await $.clock.now())) return { kind: 'local_no_usage', doneMs: RM.nowMs, latencyMs: 0 }
     if (res === null) return { kind: 'timeout', code: 'timeout', latencyMs: Math.max(0, (await $.clock.now()) - t0), doneMs: await $.clock.now() }
     const t1 = await $.clock.now()
@@ -1580,6 +1677,8 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
       else usageIdentity = null
       usageSession.invalidateReporting()
     }
+    rec.replySequence = noteRoutingReply(R, c.kind, c.kind === 'ok' && validateAnswer(c.parsed?.block, named).ok)
+    rec.decisionMs = t1
     c.latencyMs = Math.max(0, t1 - t0)
     c.doneMs = t1
     if (c.kind === 'rate_limited') {
@@ -1602,9 +1701,11 @@ function rtTurnStart(e) {
     if (!rtLive() || RM.byTurn.has(e.turnId)) return
     
     rec = newRecord(R, { nowMs: RM.nowMs, sessionModel: R.named?.model })
+    rec.carry = carryEligible(e) ? carryPick(R, e) : null
     rec.local = { action: 'local', phase: 'kept', reason: 'trivial_turn', source: 'local', counted: false }
     R.current = rec
   }
+  if (rec.local?.reason === 'trivial_turn' && rec.carry === undefined && carryEligible(e)) rec.carry = carryPick(R, e)
   RM.pending = null
   rec.turnId = e.turnId
   RM.byTurn.set(e.turnId, rec)
@@ -1635,11 +1736,14 @@ async function rtStepBegin($, e) {
     return out
   }
   out.rec = rec
+  await rtKillCheck($)
   if (rec !== null && !rec.decided) {
+    if (!rec.effortHint) rec.effortHint = await rtNamedHint($)
     rec.explicitEffort = rec.effortHint?.effortExplicit || RM.explicitEffort != null ? e.effort ?? null : null
-    rec.named = { model: e.model, effort: e.effort === undefined ? null : e.effort, effortExplicit: rec.explicitEffort != null }
+    rec.named = { model: e.model, effort: e.effort === undefined ? null : e.effort, effortExplicit: rec.explicitEffort != null, modelExplicit: rec.effortHint?.modelExplicit !== false }
     R.named = rec.named
     await rtDecide($, rec)
+    rec.pickEpochs ||= { model: RM.modelEpoch || 0, effort: RM.effortEpoch || 0 }
   }
   out.startMs = await $.clock.now()
   if (LIMIT_AWARE_ENABLED) {
@@ -1650,17 +1754,49 @@ async function rtStepBegin($, e) {
     if (out.billingMode === 'extra_usage' && facts.credit_billed_families.includes(modelFamily(e.model))) out.creditBilledFamily = modelFamily(e.model)
   }
   RM.nowMs = out.startMs
+  
+  await rtKillCheck($)
+  
+  if (rec?.carry) {
+    const fingerprint = await fingerprintKey(await readKey(iqAccess($)))
+    out.carryFingerprint = fingerprint
+    RM.nowMs = await $.clock.now()
+    const reason = carryReason(R, rec.carry, RM.nowMs, fingerprint)
+    if (reason) {
+      rec.named = { ...out.namedOriginal }
+      settleKept(R, rec, reason)
+    }
+  }
   if (rec !== null && rec.decided) out.e2 = rtApply(e, rec)
   out.changed = out.e2 !== e 
+  if (rec?.reason === 'carried_forward' && rtLive() && statusOf(R, out.startMs) === 'on') {
+    rec.choice = { model: out.e2.model, effort: out.e2.effort ?? null }
+    rec.chosen = { model: out.e2.model, effort: effortLabel(out.e2.effort) }
+  }
+  if (!R.routingRefused && rec?.reason !== 'carried_forward' && !rec?.userOverride && rec?.phase === 'applied' && rtLive() && statusOf(R, out.startMs) === 'on') {
+    R.lastAppliedPick = { choice: { model: out.e2.model, effort: out.e2.effort ?? null },
+      named: { ...rec.named }, epochs: { model: RM.modelEpoch || 0, effort: RM.effortEpoch || 0 }, pricedAs: rec.pricedAs,
+      keyFingerprint: rec.keyFingerprint, decisionMs: rec.decisionMs }
+  }
   return out
 }
 
 
 
 function rtApply(e, rec) {
-  if (R.stopped || rec.phase !== 'applied' || !rec.named || e.model !== rec.named.model) return e
+  if (e.agentId != null || !rtLive() || rec.phase !== 'applied' || !rec.named || ((RM.modelEpoch || 0) <= (rec.pickEpochs?.model || 0) && e.model !== (rec.requestModel || rec.named.model))) return e
+  if (R.routingRefused || statusOf(R, RM.nowMs) !== 'on') return e
   const named = { model: e.model, effort: e.effort ?? null }
-  return applyChoice(e, applicableChoice(rec.choice, named, rec.explicitEffort))
+  let choice = rec.reason === 'carried_forward' ? { ...rec.choice } : applicableChoice(rec.choice, named, rec.explicitEffort)
+  const automatic = { ...choice }
+  if ((RM.modelEpoch || 0) > (rec.pickEpochs?.model || 0)) choice = { ...choice, model: e.model }
+  if ((RM.effortEpoch || 0) > (rec.pickEpochs?.effort || 0)) choice = { ...choice, effort: RM.carryEffort ?? e.effort ?? null }
+  if (!sameChoice(automatic, choice)) rec.userOverride = true
+  if (rec.userOverride) {
+    settleUserChoice(R, rec, named)
+    return e
+  }
+  return applyChoice(e, choice)
 }
 
 
@@ -1675,10 +1811,19 @@ async function rtDecide($, rec) {
     if (rec.startRoute) rec.startRoute(true)
   }
   if (!rtLive()) {
-    settleNone(R, rec, 'off', 'off')
+    if (rec.carry) settleKept(R, rec, 'carry_unauthorized')
+    else settleNone(R, rec, 'off', 'off')
   } else if (rec.local) {
     const p = rec.local
-    if (p.phase === 'kept') settleKept(R, rec, p.reason)
+    const pick = rec.carry
+    const fingerprint = pick ? await fingerprintKey(await readKey(iqAccess($))) : null
+    const unauthorized = pick ? carryReason(R, pick, t0, fingerprint) : null
+    const validCarry = pick && !unauthorized && sameModel(rec.named.model, pick.named.model) && validateAnswer({
+      v: 2, ...pick.choice, stay: false, reason_code: 'carried_forward' }, rec.named).ok
+    if (validCarry && p.reason === 'trivial_turn' && statusOf(R, t0) === 'on' && !(R.backoffUntil > t0) && (!R.lastError || R.lastError === 'decisions.write')) {
+      rec.requestModel = rec.named.model
+      settleCarried(R, rec, pick)
+    } else if (p.phase === 'kept') settleKept(R, rec, unauthorized || p.reason)
     else if (p.phase === 'paused') settleNone(R, rec, 'paused', p.reason)
     else if (p.error === 'no_key') settleNone(R, rec, 'error', 'error', 'no_key')
     else settleNone(R, rec, 'error', 'backoff', 'http_429')
@@ -1712,10 +1857,10 @@ async function rtDecide($, rec) {
       settleNone(R, rec, 'error', 'error', 'http_429')
       await rtNoteError($, 'iq', new Error('http_429'), { count: false })
     } else if (['plan_required', 'allowance', 'free_quota', 'free_daily', 'auth_required', ...(LIMIT_AWARE_ENABLED ? ['no_usage'] : [])].includes(c.kind)) {
-      await persistPlanRestriction(c.kind, iqAccess($), State)
       
       rec.latencyMs = typeof c.latencyMs === 'number' ? c.latencyMs : null
       settlePause(R, rec, c.kind === 'plan_required' ? 'plan' : c.kind === 'auth_required' ? 'auth' : c.kind, t1)
+      await persistPlanRestriction(c.kind, iqAccess($), State)
       await rtNoteError($, 'iq', new Error(c.code), { count: false })
     } else {
       rec.latencyMs = typeof c.latencyMs === 'number' ? c.latencyMs : null
@@ -1800,7 +1945,7 @@ async function rtStepEnd($, e2, result, begun) {
   const derivedMs = latestCacheWriteTtlMs(u, e2.model) ?? R.observedCacheTtlMs ?? (ttlIsKnown(settings, rateLimits) ? cacheTtlMs({ ...settings, onSubscription: onSubscription(rateLimits, nowMs) }) : null)
   const cachePrev = R.cacheModels && R.cacheModels[canonicalModel(e2.model)]
   const ttlMs = latestCacheWriteTtlMs(u, e2.model) ?? writeTtlMs({ derivedMs, usage: u, prev: cachePrev ? cachePrev.last : prev, model: e2.model })
-  noteMainStep(R, { model: e2.model, effort: e2.effort, startMs: begun.startMs, endMs: nowMs, usage: u, routed: begun.changed === true, sessionModel, ttlMs, advisorCalls: advisorCallsIn(result) })
+  noteMainStep(R, { model: e2.model, effort: e2.effort, startMs: begun.startMs, endMs: nowMs, usage: u, routed: begun.changed === true && !begun.rec?.userOverride, sessionModel, ttlMs, advisorCalls: advisorCallsIn(result) })
   RM.turnSteps.set(e2.turnId, (RM.turnSteps.get(e2.turnId) || 0) + 1)
   let pricing 
   if (begun.rec !== null && RM.pricer !== null) {
@@ -1904,6 +2049,7 @@ async function rtEnd($, e) {
     RM.pending = null
     RM.turnSteps.clear()
     await rtGates($)
+    if (e.reason === 'clear') await rtAutoArm($)
   }
 }
 
@@ -1915,30 +2061,36 @@ async function rtWriteRows($, recs) {
   RM.nowMs = nowMs
   const sid = await safe($.session.id())
   const rows = recs.map((rec) => decisionRow(R, rec, { nowMs, sessionId: typeof sid === 'string' ? sid : null }))
-  const run = () => rtWriteFile($, rows, nowMs)
+  await rtAppendRows({ exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), write: (path, text) => $.fs.write(path, text) }, rows, nowMs)
+}
+
+async function rtAppendRows(access, rows, nowMs) {
+  const run = () => rtWriteFile(access, rows, nowMs)
   RM.chain = RM.chain.then(run, run)
   try {
     await RM.chain
   } catch (err) {
-    await rtNoteError($, 'decisions.write', err, { count: false })
+    
+    R.lastError = 'decisions.write'
   }
 }
 
-async function rtWriteFile($, rows, nowMs) {
+async function rtWriteFile(access, rows, nowMs) {
   if (!RM.home) return
   const day = dayOf(nowMs)
   if (RM.day !== day) {
     RM.day = day
     RM.part = 0
   }
+  RM.logTag ||= Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   const dir = pathIn(RM.home, RT_DIR, 'decisions')
   const addLen = rows.reduce((n, r) => n + JSON.stringify(r).length + 1, 0)
   for (let part = RM.part; part < LOG_MAX_PARTS; part++) {
-    const path = pathIn(dir, day + (part === 0 ? '' : '-' + (part + 1)) + '.jsonl')
+    const path = pathIn(dir, day + '-' + RM.logTag + (part === 0 ? '' : '-' + (part + 1)) + '.jsonl')
     let text = ''
-    if (await $.fs.exists(path)) text = await $.fs.read(path) 
+    if (await access.exists(path)) text = await access.read(path) 
     if (text.length + addLen > LOG_PART_CAP) continue
-    await $.fs.write(path, mergeRows(text, rows))
+    await access.write(path, mergeRows(text, rows))
     RM.part = part
     return
   }
@@ -2007,7 +2159,7 @@ async function rtCommand($, e) {
     
     if (KEEP_ROUTING_ON_ENABLED === true || State.getSetting('keepRoutingOn') === true) {
       const io = iqAccess($)
-      offSave = State.saveSettings({ keepRoutingOn: false }, (text) => writeTrustedSettings(io, text))
+      offSave = State.saveSettings({ keepRoutingOn: false }, (text, patch) => writeTrustedSettings(io, text, patch))
     }
     $.ui.invalidate('ui.render')
   }
@@ -2023,7 +2175,7 @@ async function rtCommand($, e) {
     if (!RM.ready) return { text: TEXT.cardChanged }
     if (credentials && credentials.configured() && (State.getSetting('authBlocked') === true || credentials.read() === LOGGED_OUT_KEY)) {
       const home = await trustedSettingsHome(iqAccess($))
-      if (!home || !(await State.saveSettings({ authBlocked: false }, (text) => writeTrustedSettings(iqAccess($), text), () => generation === sessionGeneration && intent === routingIntent))) {
+      if (!home || !(await State.saveSettings({ authBlocked: false }, (text, patch) => writeTrustedSettings(iqAccess($), text, patch), () => generation === sessionGeneration && intent === routingIntent))) {
         return { text: TEXT.off }
       }
       credentials.reauthorize()
@@ -2039,7 +2191,7 @@ async function rtCommand($, e) {
     if (R.pause && R.pause.kind === 'plan') return { text: planPauseText(R) }
     if (KEEP_ROUTING_ON_ENABLED === true) {
       const saved = await State.saveSettings({ keepRoutingOn: true, routingEligible: true },
-        (text) => writeTrustedSettings(iqAccess($), text), current)
+        (text, patch) => writeTrustedSettings(iqAccess($), text, patch), current)
       if (!current()) return { text: TEXT.off }
       if (!saved) return { text: TEXT.off + ' Could not save routing on for this device. Try /iq Settings.' }
     }

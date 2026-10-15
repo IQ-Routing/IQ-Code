@@ -151,8 +151,7 @@ export function baseUrl(raw, dev = false) {
     const u = new URL(s)
     if (u.username || u.password || u.search || u.hash || u.pathname.replace(/\/+$/, '') !== '/v1') return null
     const prod = u.protocol === 'https:' && u.hostname === 'gateway.iq-routing.com' && u.port === ''
-    const local = dev === true && u.protocol === 'http:' && u.hostname === 'localhost'
-    if (!prod && !local) return null
+    if (!prod) return localBaseUrl(u, dev)
     return u.origin + '/v1'
   } catch (_) {
     return null
@@ -160,17 +159,18 @@ export function baseUrl(raw, dev = false) {
 }
 
 
+let localBaseUrl = () => null
+let localDestination = () => null
+
 export function destinationFrom(user) {
-  const env = user && user.env && typeof user.env === 'object' ? user.env : {}
-  const dev = env.IQ_ROUTER_DEV_LOCALHOST === '1'
-  const base = baseUrl(dev ? env.IQ_ROUTER_BASE_URL : undefined, dev)
-  return { base, dev, host: base === null ? 'blocked' : new URL(base).host }
+  return localDestination(user) || { base: DEFAULT_BASE, dev: false, host: new URL(DEFAULT_BASE).host }
 }
 
 
 export function effortSettings(s) {
   const out = {}
   if (!s || typeof s !== 'object') return out
+  if (typeof s.model === 'string') out.model = s.model
   if (typeof s.effortLevel === 'string') out.effortLevel = s.effortLevel
   if (s.modelSettings && typeof s.modelSettings === 'object') {
     out.modelSettings = Object.create(null)
@@ -303,6 +303,7 @@ export function parseAuthResponse(res, req, action) {
 
 
 
+
 export function estimateRequest({ base, key, body, named, version, dev = false }) {
   const b = baseUrl(base, dev)
   if (b === null) return null
@@ -312,11 +313,12 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
     accept: 'application/json',
     authorization: 'Bearer ' + key,
     'x-iq-client': CLIENT_NAME + '/' + version,
+    'x-iq-cc-model-explicit': named?.modelExplicit === false ? 'false' : 'true',
+    'x-iq-cc-effort-explicit': named?.effortExplicit === true ? 'true' : 'false',
   }
   if (named && typeof named.model === 'string' && named.model !== '') headers['x-iq-cc-named-model'] = canonicalModel(named.model)
   if (named && EFFORTS.includes(named.effort)) {
     headers['x-iq-cc-named-effort'] = named.effort
-    if (named.effortExplicit === true) headers['x-iq-cc-effort-explicit'] = 'true'
   }
   return { url: b + path, init: { method: 'POST', headers, body: JSON.stringify(body) } }
 }
