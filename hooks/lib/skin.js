@@ -1,5 +1,3 @@
-import { KEEP_ROUTING_ON_ENABLED } from './release_flags.js'
-import { LOGIN_SUCCESS } from './login_pane.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 
 
@@ -418,7 +416,7 @@ function homeTab(a) {
   if (a.firstRun) {
     blank()
     add('head', 'Welcome. Three steps')
-    add('plain', '1. Turn routing on (Settings, or /iq-route on). It needs your IQ key and Personal ($6/month) or higher, and starts off in every session.')
+    add('plain', '1. Turn routing on with /iq-route on. It needs your IQ key and Personal ($6/month) or higher, and stays on until /iq-route off.')
 
     add('plain', v.settings && v.settings.forecastSource === 'server' ? '2. Check measured spend, hourly pace and plan limits in /iq Home and Cost.' : '2. Pick how you want spend measured in Settings: dollars (' + SHORT + ') or percent of your plan.')
     add('plain', '3. Come back to /iq any time: Routing shows what IQ chose, Plan shows when you would hit your limits.')
@@ -497,7 +495,7 @@ function settingsTab(a) {
   const L = []
   const add = (style, text) => L.push({ style, text })
   add('title', 'Settings')
-  add('dim', 'Routing lasts for this session. Other preferences are saved for you.')
+  add('dim', 'Routing stays on in new sessions on this device until you turn it off.')
   add('plain', 'IQ destination: ' + displayText(a.destinationHost || 'gateway.iq-routing.com'))
   add('plain', ' ')
   const facts = LIMIT_AWARE_ENABLED && a.view && a.view.limitFacts
@@ -533,11 +531,7 @@ function settingsTab(a) {
   const routingOn = !!(a.view && a.view.routing && a.view.routing.on)
   L.push({ style: 'plain', text: pad('Routing', 22) + on(routingOn) })
   if (a.canRoute === true) L.push({ control: { key: 'routing', label: routingOn ? 'Turn routing off' : 'Turn routing on', hotkey: 'r', do: { kind: 'routing', value: !routingOn } } })
-  else add('dim', 'Turn it on for this session by typing /iq-route on (and /iq-route off to stop). It starts off every time.')
-  if (KEEP_ROUTING_ON_ENABLED && a.keepRoutingEnabled === true) {
-    if (s.keepRoutingOn === true && s.routingEligible === false) add('plain', LOGIN_SUCCESS.free)
-    L.push({ control: { key: 'keep-routing', label: s.keepRoutingOn === true ? 'Stop keeping routing on' : 'Keep routing on', hotkey: 'f', do: { kind: 'set', key: 'keepRoutingOn', value: s.keepRoutingOn !== true } } })
-  }
+  else add('dim', 'Type /iq-route on to turn routing on. It stays on in new sessions on this device until /iq-route off.')
   L.push({ style: 'plain', text: pad('Animation', 22) + on(s.animation !== false) + source('animation') })
 
   L.push({ control: { key: 'animation', label: s.animation !== false ? 'Turn animation off' : 'Turn animation on', hotkey: 'a', do: { kind: 'set', key: 'animation', value: s.animation === false } } })
@@ -568,7 +562,7 @@ function settingsTab(a) {
     add('dim', BRIEF_NOTE)
   }
   if (dashboardAvailable) add('dim', 'Your IQ key reads session defaults even with routing off. Settings requests send no prompt content.')
-  add('dim', 'Routing needs your IQ key and Personal ($6/month) or higher, and starts off in every session.')
+  add('dim', 'Routing needs your IQ key and Personal ($6/month) or higher, and stays on until /iq-route off.')
 
   return L
 }

@@ -46,8 +46,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 16371,
-      "sha256": "95e9fd2be043f5bb1d5a70a3116ca8e5668e48f63afa1ad9723dd755a3eaa9db"
+      "bytes": 16814,
+      "sha256": "9f07b28695b4a7950acc15e9339ce3efd2f2107ea5b18437942b0a3877d44cd8"
     },
     {
       "path": "data/logo_frames.json",
@@ -126,8 +126,8 @@
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 20522,
-      "sha256": "c2c5828494190f337c74d8e59ac6fcd7e2b32c170f3f902100b26463447a1670"
+      "bytes": 20540,
+      "sha256": "db4dcba2a36d6b485d504f49853c1196f7d1fd88d59042693ce6aee94af53ed1"
     },
     {
       "path": "hooks/lib/limit_savings.js",
@@ -191,8 +191,8 @@
     },
     {
       "path": "hooks/lib/release_flags.js",
-      "bytes": 138,
-      "sha256": "d305ad476e160c23af9cd5d51238e51d5ae190a8864d4c4382a1c65648f99853"
+      "bytes": 137,
+      "sha256": "f1c0598d671f4b7b8e7042ad0acf377a98eae9f60df5efe23276535e07a26cb6"
     },
     {
       "path": "hooks/lib/route_transport.js",
@@ -201,8 +201,8 @@
     },
     {
       "path": "hooks/lib/router.js",
-      "bytes": 28556,
-      "sha256": "9f10855d655641fe581f221d967adf45a6bbd59962860566b34d97ccc92563a4"
+      "bytes": 28591,
+      "sha256": "e99232ca3e01f9fe4f0a3941154d919bb01e44af941402e3ec36616799f02a7c"
     },
     {
       "path": "hooks/lib/runtime_mode.js",
@@ -226,8 +226,8 @@
     },
     {
       "path": "hooks/lib/skin.js",
-      "bytes": 32033,
-      "sha256": "1e39ca3e19e5d2fb5652c081c47b47bc2eb2fdf560d4124a70ae8ef9ac991815"
+      "bytes": 31527,
+      "sha256": "da6f4b921f4ff04b580810a55b0ec21ebf71e0aede662c87a2114dec2da32dca"
     },
     {
       "path": "hooks/lib/state.js",
@@ -246,8 +246,8 @@
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 3980,
-      "sha256": "746f4daee2b3c4be2c5ef18e8c66f5028f758358a2304d387f8916c4b40a7933"
+      "bytes": 4030,
+      "sha256": "d258b82eb0649c453c82653a5a43a0109f9109a93e3c8f744bf6cb6f6d99751a"
     },
     {
       "path": "hooks/lib/trivial_turn.js",
@@ -256,8 +256,8 @@
     },
     {
       "path": "hooks/lib/ui.js",
-      "bytes": 21604,
-      "sha256": "cadf73923f25121167fe2f779494edb1bc87b3bbae0ac82d1cb9fc46afac0611"
+      "bytes": 21648,
+      "sha256": "d02c5f0b2a700e7dd1da031ac4d0e57e2ccfad29c009e51b4c9fefa936a69cae"
     },
     {
       "path": "hooks/lib/usage_flags.js",
@@ -286,8 +286,8 @@
     },
     {
       "path": "hooks/register.js",
-      "bytes": 74483,
-      "sha256": "05a987fbafee8443c1a4acd3cad3f77cc9a71257bd4e84fc7f61814a48d09d24"
+      "bytes": 75239,
+      "sha256": "a20861eff535a29546f87e1c98b87b17cb6c7f47cdda05c4e7dd347e8722ee7a"
     },
     {
       "path": "hooks/route_handlers.js",
@@ -296,13 +296,13 @@
     },
     {
       "path": "hooks/thin_subagent_handlers.js",
-      "bytes": 11874,
-      "sha256": "5850ea07cbbdcf744896127ec6f9c854b5804498fe9bdb45587afeac1d13f198"
+      "bytes": 12062,
+      "sha256": "00cf89a0e354d064575c6e7bd44fd38762e3317599c39864e52fbd60f8fb8b5d"
     },
     {
       "path": "hooks/ui_handlers.js",
-      "bytes": 30659,
-      "sha256": "3a4d88a04eab35693630f6db231a577a7ec2e26d14e10f01409c9a262ea3406a"
+      "bytes": 30634,
+      "sha256": "63ac35bf5c9b09abd9988d2c81c0be9cc1a9cedd0d66b99f090d021541266f1d"
     },
     {
       "path": "install.cmd",

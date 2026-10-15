@@ -700,7 +700,7 @@ async function onIq($, e) {
   await ensureLoaded($)
   if (LIMIT_AWARE_ENABLED && typeof H.refreshLimits === 'function') await H.refreshLimits(limitAccess($))
   const tab = typeof e.args === 'string' ? e.args.trim().toLowerCase() : ''
-  H.tab.set((LIMIT_AWARE_ENABLED || BROWSER_LOGIN_ENABLED && KEEP_ROUTING_ON_ENABLED) && ['home', 'routing', 'cost', 'plan', 'settings'].includes(tab) ? tab : 'home')
+  H.tab.set((LIMIT_AWARE_ENABLED || KEEP_ROUTING_ON_ENABLED) && ['home', 'routing', 'cost', 'plan', 'settings'].includes(tab) ? tab : 'home')
   stopTimer('iq/iq-home')
   U.finished.delete('iq/iq-home') 
   stopTimer('svg/iq/iq-home')

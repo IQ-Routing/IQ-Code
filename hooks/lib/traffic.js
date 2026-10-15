@@ -43,7 +43,7 @@ export async function writeTrustedSettings(access, text) {
 
 
 export async function persistPlanRestriction(kind, access, state) {
-  if (kind !== 'plan_required' || state.getSetting('keepRoutingOn') !== true) return false
+  if (!['plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind) || state.getSetting('keepRoutingOn') !== true) return false
   try {
     if (!(await trustedSettingsHome(access))) return false
     return await state.saveSettings({ routingEligible: false }, (text) => writeTrustedSettings(access, text),

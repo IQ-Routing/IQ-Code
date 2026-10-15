@@ -159,7 +159,9 @@ export function registerThinSubagents(on, ctx, enabled) {
             const rec = { named: { model: base, effort }, counted: false }
             if (LIMIT_AWARE_ENABLED && classified.kind === 'no_usage' && ctx.noteNoUsage) ctx.noteNoUsage(nowMs)
             settlePause(r, rec, classified.kind === 'plan_required' ? 'plan' : classified.kind === 'auth_required' ? 'auth' : classified.kind, nowMs)
-            if (!r.failureNotices.has(rec.error)) {
+            const notice = ['plan_required', 'allowance', 'free_quota', 'free_daily'].includes(classified.kind) ? 'routing_restriction' : rec.error
+            if (!r.failureNotices.has(notice)) {
+              r.failureNotices.add(notice)
               r.failureNotices.add(rec.error)
               try { void safe($.ui.log(lineFor(rec, nowMs, r))) } catch (_) {}
             }

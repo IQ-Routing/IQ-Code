@@ -21,9 +21,9 @@ export const MIN_DEADLINE_MS = 1000
 export const MAX_DEADLINE_MS = 8000
 export const ALLOWANCE_CODE = 'subscription_routing_allowance_exceeded'
 
-export const ROUTING_PLAN_TEXT = 'Routing needs the Personal plan ($6/month). Nothing was sent to IQ for routing. iq-routing.com/billing'
+export const ROUTING_PLAN_TEXT = 'Routing needs the Personal plan ($6/month). Nothing was sent to IQ for routing. iq-routing.com/billing See /iq.'
 
-export const ROUTING_REFUSED_TEXT = 'Routing needs the Personal plan ($6/month). IQ did not route this prompt; kept your model. iq-routing.com/billing'
+export const ROUTING_REFUSED_TEXT = 'Routing needs the Personal plan ($6/month). IQ did not route this prompt; kept your model. iq-routing.com/billing See /iq.'
 
 export const ROUTING_KEY_TEXT = 'Routing is paused: IQ did not accept your key. Check it, then type /iq-route on.'
 

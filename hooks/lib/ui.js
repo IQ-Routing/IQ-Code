@@ -310,8 +310,8 @@ function routingTab(r, measured) {
     add('warn', 'The routing state is not one this version of IQ Code knows.')
     return L
   }
-  if (r.status === 'off') add('plain', 'IQ routing is off. It starts off in every session.')
-  else if (r.status === 'on') add('route_down', 'IQ routing is on for this session.')
+  if (r.status === 'off') add('plain', 'IQ routing is off for this and future sessions.')
+  else if (r.status === 'on') add('route_down', 'IQ routing is on. It stays on in new sessions on this device until /iq-route off.')
   else {
     const b = statusLine(r)
     add(b.style, b.text + (r.status === 'paused_plan' ? '' : '.'))

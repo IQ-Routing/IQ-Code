@@ -674,14 +674,14 @@ export const TEXT = {
   stopped: 'iq-route: stopped for this session. A routed request was rejected, so your model is used.',
   pausedPlan: ROUTING_PLAN_TEXT,
   pausedPlanRefused: ROUTING_REFUSED_TEXT,
-  pausedAllowance: "iq-route: paused. This month's routing decisions are used up; routing resumes on the 1st (UTC), and your model is used until then.",
+  pausedAllowance: "iq-route: paused. This month's routing decisions are used up; routing resumes on the 1st (UTC), and your model is used until then. See /iq.",
   off: 'iq-route: off.',
   reset: 'iq-route: reset. The next prompt is rated fresh.',
 }
 
 export function onLine(R, nowMs) {
   if (R.pause && (['plan', 'auth'].includes(R.pause.kind) || R.pause.untilMs > nowMs)) return pauseText(R)
-  return 'iq-route: on for this session (/iq-route off to stop).'
+  return 'iq-route: on. It stays on in new sessions on this device until /iq-route off.'
 }
 
 
@@ -692,7 +692,7 @@ export function statusLines(R, nowMs) {
   if (st === 'killed') out.push(R.cardBad ? TEXT.cardChanged : TEXT.killed)
   else if (st === 'no_key') out.push(TEXT.noKey)
   else if (st === 'paused_errors') out.push(R.stopped ? TEXT.stopped : TEXT.quiet)
-  else if (st === 'off') out.push('iq-route: off. /iq-route on turns it on for this session.')
+  else if (st === 'off') out.push('iq-route: off. /iq-route on turns it on until /iq-route off.')
   else if (st === 'paused_no_usage') out.push(noUsageLine(R.limitFacts && R.limitFacts.next_reset))
   else if (st === 'paused_plan' || st === 'paused_allowance') out.push(pauseText(R))
   else {

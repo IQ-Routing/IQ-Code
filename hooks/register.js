@@ -1290,7 +1290,8 @@ async function rtStart($, e) {
   await rtGates($)
   if (KEEP_ROUTING_ON_ENABLED === true && State.getSetting('keepRoutingOn') === true && State.getSetting('routingEligible') !== false && State.getSetting('authBlocked') !== true && M.interactive) {
     const generation = sessionGeneration
-    if (await rtArm(armAccess($), () => generation === sessionGeneration && !sessionOff)) say($, onLine(R, RM.nowMs))
+    const intent = routingIntent
+    await rtArm(armAccess($), () => generation === sessionGeneration && intent === routingIntent && !sessionOff)
   }
 }
 
@@ -1754,6 +1755,10 @@ function rtLineFor($, rec, nowMs) {
     R.pauseNoted = true
   }
   const code = rec.error || (R.pause && R.pause.kind) || rec.phase
+  if (['plan_required', 'allowance_exceeded', 'free_quota_exhausted', 'free_global_daily_quota_exhausted'].includes(code)) {
+    if (R.failureNotices.has('routing_restriction')) return
+    R.failureNotices.add('routing_restriction')
+  }
   if (R.failureNotices.has(code)) return
   R.failureNotices.add(code)
   const line = lineFor(rec, nowMs, R)
@@ -1990,7 +1995,7 @@ async function rtPlanCheck($, current) {
 async function rtCommand($, e) {
   if (!userOrigin(e)) return {}
   const arg = (typeof e.args === 'string' ? e.args : '').trim().toLowerCase()
-  const intent = arg === 'off' || arg === 'on' && BROWSER_LOGIN_ENABLED === true && KEEP_ROUTING_ON_ENABLED === true ? ++routingIntent : routingIntent
+  const intent = arg === 'off' || arg === 'on' && KEEP_ROUTING_ON_ENABLED === true ? ++routingIntent : routingIntent
   const generation = sessionGeneration
   let offSave = null
   if (arg === 'off') {
@@ -2000,7 +2005,7 @@ async function rtCommand($, e) {
     if (R.pause && R.pause.kind === 'plan' && R.pause.posted !== true) R.pause = null 
     cancelRouteWork()
     
-    if (State.getSetting('keepRoutingOn') === true) {
+    if (KEEP_ROUTING_ON_ENABLED === true || State.getSetting('keepRoutingOn') === true) {
       const io = iqAccess($)
       offSave = State.saveSettings({ keepRoutingOn: false }, (text) => writeTrustedSettings(io, text))
     }
@@ -2032,6 +2037,12 @@ async function rtCommand($, e) {
     if (!RM.home) return { text: TEXT.noHome }
     if (R.stopped) return { text: TEXT.stopped } 
     if (R.pause && R.pause.kind === 'plan') return { text: planPauseText(R) }
+    if (KEEP_ROUTING_ON_ENABLED === true) {
+      const saved = await State.saveSettings({ keepRoutingOn: true, routingEligible: true },
+        (text) => writeTrustedSettings(iqAccess($), text), current)
+      if (!current()) return { text: TEXT.off }
+      if (!saved) return { text: TEXT.off + ' Could not save routing on for this device. Try /iq Settings.' }
+    }
     if (LIMIT_AWARE_ENABLED) {
       await refreshLimits($)
       if (!current()) return { text: TEXT.off }
@@ -2051,6 +2062,8 @@ async function rtCommand($, e) {
       }
     }
     if (isFreePlan(R.plan)) {
+      await persistPlanRestriction('plan_required', iqAccess($), State)
+      if (!current()) return { text: TEXT.off }
       R.armed = false
       R.pause = { kind: 'plan' }
       R.pauseNoted = true
