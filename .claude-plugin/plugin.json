@@ -1,8 +1,8 @@
 {
   "name": "iq-code",
   "displayName": "IQ Code",
-  "version": "1.0.1",
-  "description": "IQ Code: your Claude Code session with the IQ skin. A live band with the prompt cache's countdown and your plan forecast, the model and thinking level on every answer, an animated IQ mark while Claude works, and a /iq pane with Home, Routing, Cost, Plan and Settings. With an IQ key and Personal plan or higher, /iq-route on lets IQ Routing choose each prompt's model and thinking level; your tokens still go straight to Anthropic on your plan. All dollars are API-equivalent.",
+  "version": "1.1.0",
+  "description": "IQ Code: your Claude Code session with the IQ skin and the waving iQ flag. With routing on, a one-line band shows the model and thinking level in use. The /iq pane holds Home, Routing, Cost, Plan and Settings: measured cost, the prompt cache's countdown and your plan pace. With an IQ key and Personal plan or higher, /iq-route on lets IQ Routing choose each prompt's model and thinking level; your tokens still go straight to Anthropic on your plan. All dollars are API-equivalent.",
   "author": {
     "name": "IQ Routing",
     "url": "https://iq-routing.com"
@@ -11,7 +11,7 @@
     "iq_api_key": {
       "type": "string",
       "title": "IQ API key",
-      "description": "Your IQ key for routing, which needs Personal ($6/month) or higher. Personal adds rough session cost estimates. Apply changes with /reload-plugins or a restart.",
+      "description": "Your IQ key for routing, which needs Personal ($6/month) or higher. IQ Code shows measured session cost and pace. Apply changes with /reload-plugins or a restart.",
       "sensitive": true
     }
   }

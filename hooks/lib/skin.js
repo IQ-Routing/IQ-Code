@@ -1,3 +1,5 @@
+import { KEEP_ROUTING_ON_ENABLED } from './release_flags.js'
+import { LOGIN_SUCCESS } from './login_pane.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 
 
@@ -5,11 +7,16 @@ import { FORCE_SERVER } from './runtime_mode.js'
 
 
 
-import { shortModel, fit, fitChunks, fitText, joinGroups, rowWidth, bandModel, paneTabs, sessionCostLines, planPauseLine } from './ui.js'
-import { sessionParts, promptParts, totalIsFloor, floorNotes, usd, percent, plural, count, resetText, viewResetMs, windowFinished, resetLabel, stamp, hours, tokenSize, LABEL } from './format.js'
+import { shortModel, fit, fitChunks, fitText, joinGroups, rowWidth, bandModel, paneTabs, sessionCostLines, planPauseLine, cacheStayText, measuredCostLines } from './ui.js'
+import { sessionParts, promptParts, measuredDollars, measuredSpendLine, totalIsFloor, floorNotes, usd, percent, plural, count, resetText, stamp, hours, tokenSize, LABEL, noUsageLine, limitPlanLines, familyLimitLine, LIMIT_SETTINGS_TEXT, PLAN_TYPE_CHOICES, PLAN_TIER_CHOICES, FABLE_BILLING_CHOICES, authKindLine, receiptBillingTurn, receiptBillingTotals, windowReset, WINDOW_RESET } from './format.js'
+import { modelFamily } from './limits.js'
+import { FORECAST_TEXT } from './server_forecast.js'
 import { cacheClock } from './view_model.js'
 import { displayText } from './iq_client.js'
-import { FORECAST_TEXT } from './server_forecast.js'
+import { SAVINGS_MODES_ENABLED, USAGE_REPORTS_ENABLED, LIMIT_AWARE_ENABLED } from './usage_flags.js'
+import { savingsModes, savingsPlanRows } from './savings_modes.js'
+import { receiptText } from './receipt.js'
+import { effortRaise } from './models.js'
 
 const SEP = ' · '
 const SHORT = 'API-eq.'
@@ -19,13 +26,21 @@ const BRIEF_NOTE_SWITCH = 'With routing on, the scrubbed subagent brief (at most
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x)
 const isStr = (x) => typeof x === 'string' && x !== ''
 
+function modeOf(view) {
+  const s = SAVINGS_MODES_ENABLED && view && view.savings
+  return s ? savingsModes(s.receipt, { planType: s.planType, free: s.free,
+    billingMode: LIMIT_AWARE_ENABLED ? s.billingMode ?? view.limitFacts?.billing_mode : undefined,
+    creditBilledFamily: LIMIT_AWARE_ENABLED ? s.creditBilledFamily || (view.limitFacts && (view.limitFacts.credit_billed_families || []).includes(modelFamily(view.served && view.served.model)) ? modelFamily(view.served && view.served.model) : null) : null,
+    weeklyPct: s.limits.seven_day.percent, fiveHourPct: s.limits.five_hour.percent }) : null
+}
 
-export const PRODUCT_VERSION = '1.0.1'
+
+export const PRODUCT_VERSION = '1.1.0'
 
 
 export const WORDS = {
   product: 'IQ Code',
-  glyph: '◆',
+  glyph: '◆', 
   routed: 'routed',
   notRouted: 'not routed',
   cacheLeft: 'cache',
@@ -121,13 +136,16 @@ function clockText(ms) {
 
 
 export const HEAT_WORDS = ['heat low', 'heat med', 'heat high', 'heat very high', 'heat max']
-export const HEAT_FROM_ADDED = [0, 60000, 100000, 150000, 250000]
-export const COOLER_UNDER = 5
+export const HEAT_FROM_ADDED = [0, 60000, 100000, 150000, 250000] 
+export const COOLER_UNDER = 5 
 export function cacheHeat(c) {
   if (!c) return null
+  if (c.state === 'unknown') return null
   if (c.state === 'cold') return HEAT_WORDS[0]
-  if (!isNum(c.addedTokens)) return null
-  let step = HEAT_FROM_ADDED.filter((from) => c.addedTokens >= from).length - 1
+  const dollars = c.heatUsd !== undefined
+  if (dollars && (!isNum(c.heatUsd) || !Array.isArray(c.heatThresholdsUsd))) return null
+  if (!dollars && !isNum(c.addedTokens)) return null
+  let step = (dollars ? c.heatThresholdsUsd : HEAT_FROM_ADDED).filter((from) => (dollars ? c.heatUsd : c.addedTokens) >= from).length - 1
   if (c.leftMs * COOLER_UNDER < c.ttlSeconds * 1000) step = Math.max(step - 1, 0)
   return HEAT_WORDS[step]
 }
@@ -138,9 +156,15 @@ export function cacheHeat(c) {
 export function cacheChunk(view, nowMs) {
   const c = cacheClock(view && view.cache, nowMs)
   if (!c) return null
+  if (c.state === 'unknown') return { text: 'cache unknown', noHeat: 'cache unknown', short: 'cache unknown', heat: null, rebuild: null, style: 'dim' }
   const heat = cacheHeat(c)
   const size = c.tokens !== null ? tokenSize(c.tokens) : null
   const cost = c.rebuildUsd !== null ? usd(c.rebuildUsd) + ' (' + SHORT + ')' : null
+  if (c.compacted && c.state === 'warm') {
+    const short = WORDS.cacheLeft + ' ' + clockText(c.leftMs) + ' left'
+    const text = WORDS.cacheLeft + ' prefix unknown' + SEP + clockText(c.leftMs) + ' left'
+    return { text, noHeat: text, short, heat: null, rebuild: null, style: 'dim' }
+  }
   if (c.state === 'cold') {
     const text = size ? WORDS.cacheLeft + ' ' + size + SEP + 'cold' : WORDS.cacheCold
     return { text, noHeat: text, short: WORDS.cacheCold, heat, rebuild: cost ? WORDS.rebuildCold + ' ' + cost : null, style: 'warn' }
@@ -159,11 +183,12 @@ export function cacheShown(view, nowMs) {
 }
 
 
-
-
-export function bandShown(view, nowMs) {
-  const plan = planChunk(view, nowMs)
-  return cacheShown(view, nowMs) + '\n' + (plan ? plan.text : '')
+export function sessionCostChunk(meter) {
+  const measured = meter && meter.session && meter.session.measured
+  if (!measured) return null
+  const money = measuredDollars
+  const fraction = isNum(measured.percent) ? ' (' + Math.round(measured.percent) + '%)' : ''
+  return { text: 'this session: ' + money(measured.paid_usd) + (isNum(measured.paid_usd) && measured.paid_complete === false ? '+' : '') + ' spent' + SEP + 'saved ' + money(measured.saved_usd) + fraction, style: isNum(measured.saved_usd) && measured.saved_usd < 0 ? 'warn' : 'plain' }
 }
 
 function etaText(hitAt, nowMs) {
@@ -174,32 +199,69 @@ function etaText(hitAt, nowMs) {
 
 
 
+function planEnded(view, nowMs) {
+  const p = view && view.plan
+  return {
+    five: !!p && (p.fiveHourReset === true || windowReset(p.fiveHourResetsAt, nowMs).passed),
+    week: !!p && (p.weeklyReset === true || windowReset(p.weeklyResetsAt, nowMs).passed),
+  }
+}
+
+
 
 export function planChunk(view, nowMs) {
+  const facts = LIMIT_AWARE_ENABLED && view && view.limitFacts
+  if (facts ? facts.billing_mode === 'api' : SAVINGS_MODES_ENABLED && view && view.savings && view.savings.planType === 'api') return null
   const p = view && view.plan
-  if (!p || (!isNum(p.fiveHourPct) && !isNum(p.weeklyPct))) return null
+  const ended = planEnded(view, nowMs)
+  
+  const shown = (kind, reading, finished) => {
+    if (facts) {
+      const live = (facts.rows || []).find((row) => row.kind === kind)?.percent_used
+      return isNum(live) ? live : null
+    }
+    return finished ? null : reading
+  }
   const parts = []
   let hot = false
-  const part = (label, pct, resetsAt) => {
-    if (!isNum(pct)) return
-    if (windowFinished(viewResetMs(resetsAt), nowMs)) {
-      parts.push(resetLabel(label))
-      return
-    }
-    parts.push(label + ' ' + percent(pct))
-    if (Math.round(pct) >= 80) hot = true
+  for (const [label, kind, reading, finished] of [['5-hour', 'five_hour', p && p.fiveHourPct, ended.five], ['weekly', 'seven_day', p && p.weeklyPct, ended.week]]) {
+    const pct = shown(kind, reading, finished)
+    if (isNum(pct)) {
+      parts.push(label + ' ' + percent(pct))
+      if (Math.round(pct) >= 80) hot = true 
+    } else if (finished) parts.push(label + ' ' + WINDOW_RESET)
   }
-  part('5-hour', p.fiveHourPct, p.fiveHourResetsAt)
-  part('weekly', p.weeklyPct, p.weeklyResetsAt)
-  if (isNum(p.stretchPct)) parts.push(WORDS.stretch + ' ~' + Math.round(p.stretchPct) + '% est.')
+  if (parts.length === 0) return null
+  if (p && isNum(p.stretchPct)) parts.push(WORDS.stretch + ' ~' + Math.round(p.stretchPct) + '% est.')
   return { text: parts.join(SEP), style: hot ? 'warn' : 'dim' }
+}
+
+
+
+
+export function idleShown(view, nowMs) {
+  const ended = planEnded(view, nowMs)
+  return cacheShown(view, nowMs) + '\u0001' + (ended.five ? 'f' : '') + (ended.week ? 'w' : '')
+}
+
+
+
+export function nextPlanReset(view, nowMs) {
+  const p = view && view.plan
+  if (!p || !isNum(nowMs)) return null
+  let next = null
+  for (const key of ['fiveHourResetsAt', 'weeklyResetsAt']) {
+    const w = windowReset(p[key], nowMs)
+    if (w.atMs !== null && !w.passed) next = next === null ? w.atMs - nowMs : Math.min(next, w.atMs - nowMs)
+  }
+  return next
 }
 
 
 export function budgetChunk(view) {
   const b = view && view.budget
   if (!b || b.status === 'none' || !b.status || !isNum(b.limit)) return null
-  const spent = b.unit === 'plan_pct' ? (isNum(b.spentPct) ? percent(Math.round(b.spentPct)) : null) : usd(b.spentUsd) + (b.spentFloor === true ? '+' : '')
+  const spent = b.unit === 'plan_pct' ? (isNum(b.spentPct) ? percent(Math.round(b.spentPct)) : null) : usd(b.spentUsd) + (b.spentFloor === true ? '+' : '') 
   if (spent === null) return null
   const of = b.unit === 'plan_pct' ? percent(b.limit) : usd(b.limit) + ' (' + SHORT + ')'
   let text = 'budget ' + spent + ' of ' + of
@@ -222,8 +284,13 @@ export function budgetWarning(view) {
 }
 
 
-
-
+export function forecastChunk(view, meter) {
+  const text = measuredSpendLine(meter?.session?.measured)
+  if (text) return { text, style: 'dim' }
+  return legacySessionForecast(view, { spentUsd: meter?.session?.usd ?? meter?.spentUsd,
+    advisorUnpriced: meter?.session?.advisorUnpriced ?? meter?.advisorUnpriced,
+    band: meter?.band === true })
+}
 
 const NO_ESTIMATE = {
   helpers_seen: 'No estimate for sessions with subagents',
@@ -231,13 +298,13 @@ const NO_ESTIMATE = {
   model_unsupported: 'No estimate for this model yet',
   long_session: 'No estimate past 64 calls',
 }
-export function forecastChunk(view, opts) {
+function legacySessionForecast(view, opts) {
   const fc = view && view.forecast
   if (!fc || fc.source !== 'server') return null
   if (fc.state === 'available' && isNum(fc.totalQ50Usd)) {
-
+    
     if (opts && isNum(opts.spentUsd) && Math.round(fc.totalQ50Usd * 100) < Math.round(opts.spentUsd * 100)) return null
-
+    
     if (opts && isNum(opts.advisorUnpriced) && opts.advisorUnpriced > 0) return null
     return { text: 'This session: rough est. total ' + usd(fc.totalQ50Usd) + ' (API-equivalent)', style: fc.pending ? 'dim' : 'plain' }
   }
@@ -247,118 +314,9 @@ export function forecastChunk(view, opts) {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 export const HEAT_MIN_COLUMNS = 80
 export function bandRows(a) {
-  const rows = bandModel({ meter: a.meter, routing: a.routing, columns: a.columns, nowMs: a.nowMs })
-  if (rows === null) return null
-  const m = a.meter
-  const working = !!(m && m.working === true && m.prompt)
-  const cache = working ? null : cacheChunk(a.view, a.nowMs)
-  const plan = planChunk(a.view, a.nowMs)
-  const budget = budgetChunk(a.view)
-
-  const warning = budgetWarning(a.view) || (budget && a.view.budget.spentFloor === true ? { forms: [budget.text], style: budget.style } : null)
-  const forecast = forecastChunk(a.view, { band: true, spentUsd: m && m.session ? m.session.usd : null, advisorUnpriced: m && m.session ? m.session.advisorUnpriced : 0 })
-  if (!cache && !plan && !budget && !forecast) return rows
-  const width = isNum(a.columns) && a.columns > 20 ? a.columns - 3 : 100
-
-  const chunkSpan = (c, form) => [{ text: c[form] || c.text, style: c.style }]
-  const quiet = warning === null ? budget : null
-
-  const widest = (forms, style) => {
-    const text = forms.find((t) => t.length <= width)
-    return text === undefined ? null : [{ text, style }]
-  }
-  const estimate = forecast ? widest([forecast.text, forecast.text.replace(/^This session: /, '').replace('(API-equivalent)', '(' + SHORT + ')')], forecast.style) : null
-  const warningRow = warning ? widest(warning.forms, warning.style) || fit([{ text: warning.forms[warning.forms.length - 1], style: warning.style }], width) : null
-  const tail = [plan && chunkSpan(plan, 'text'), quiet && chunkSpan(quiet, 'text')].filter(Boolean)
-  if (working) {
-
-    const cut = (row) => (rowWidth(row) <= width ? row : row.length === 1 ? fitText(row[0].text, row[0].style, width) : fit(row, width))
-    rows.forEach((row, i) => { rows[i] = cut(row) })
-
-
-    const body = rows.slice(1)
-    const last = body.length > 0 ? body[body.length - 1] : null
-    const joined = last && tail.length > 0 ? joinGroups([last, ...tail]) : null
-    const under = joined !== null && rowWidth(joined) <= width ? [...body.slice(0, -1), joined] : [...body, tail.length > 0 ? fitChunks(tail, width) : []]
-    return [rows[0] || [], estimate, ...under, warningRow].filter((r) => r && r.length > 0)
-  }
-
-  const routingOn = a.routing && a.routing.status !== 'off'
-  const head = routingOn && rows.length > 0 ? rows[0] : null
-  const lim = plan ? [] : Array.isArray(m && m.rate_limits) ? m.rate_limits.map((l) => (l ? { kind: l.kind, percentUsed: l.percent_used, resetsAt: l.resets_at } : l)) : []
-  const facts = m && m.session ? sessionParts({ usd: m.session.usd, calls: m.session.calls, unpriced: m.session.unpriced, advisorUnpriced: m.session.advisorUnpriced, resumed: m.session.resumed, activeHours: m.session.active_hours, rateLimits: lim, columns: 400, nowMs: a.nowMs }) : null
-
-  const session = (kept) => {
-    const text = facts && kept > 0 ? [facts.total, facts.active, facts.rate].filter((t) => t !== null).slice(0, kept).join(SEP) : ''
-    return text ? [{ text, style: 'dim' }] : null
-  }
-  const limits = facts && facts.limits.length > 0 ? [{ text: facts.limits.join(SEP), style: 'dim' }] : null
-  const forms = isNum(a.columns) && a.columns < HEAT_MIN_COLUMNS ? ['noHeat', 'short'] : ['text', 'noHeat', 'short']
-  const withTotal = [[3, forms[0]], [2, forms[0]], [1, forms[0]], ...forms.slice(1).map((form) => [1, form])]
-  const noTotal = forms.map((form) => [0, form])
-
-
-
-  const stages = [[true, true, withTotal.slice(0, 3)], [false, true, withTotal], [false, true, noTotal], [false, false, noTotal]]
-  const rowOf = (kept, form, withBudget, withPlan) => joinGroups([session(kept), withPlan && !plan && limits, cache && chunkSpan(cache, form), withPlan && plan && chunkSpan(plan, 'text'), withBudget && quiet && chunkSpan(quiet, 'text')].filter(Boolean))
-  let second = null
-  let totalKept = true
-  let planKept = true
-  for (const [withBudget, withPlan, steps] of stages) {
-    for (const [kept, form] of steps) {
-      const row = rowOf(kept, form, withBudget, withPlan)
-      if (rowWidth(row) <= width) {
-        second = row
-        totalKept = kept > 0
-        planKept = withPlan
-        break
-      }
-    }
-    if (second !== null) break
-  }
-  if (second === null) {
-    second = fit(rowOf(0, forms[forms.length - 1], false, false), width)
-    totalKept = false
-    planKept = false
-  }
-
-  const planRow = !planKept && plan && plan.style === 'warn' ? fit(chunkSpan(plan, 'text'), width) : null
-
-
-
-  const lastParts = m && m.session ? promptParts(m.session.last_prompt) : null
-  const lastForms = (labelled) => {
-    if (!lastParts) return []
-    const first = lastParts.head + (labelled ? ' (' + SHORT + ')' : '')
-    return [first + SEP + lastParts.calls + lastParts.share + lastParts.est, first + SEP + lastParts.calls + lastParts.share, first + SEP + lastParts.calls, first].filter((t, i, all) => i === 0 || t !== all[i - 1])
-  }
-  const lastSpan = (text) => [{ text, style: 'plain' }]
-
-  let lastRow = lastParts ? widest([...lastForms(true), lastParts.head], 'plain') || fit(lastSpan(lastParts.head), width) : null
-  let totalRow = null
-  if (!totalKept && facts && facts.total) {
-
-    const total = [{ text: facts.total, style: 'dim' }]
-    const beside = lastForms(false).map((t) => joinGroups([lastSpan(t), total])).find((r) => rowWidth(r) <= width)
-    if (beside) lastRow = beside
-    else totalRow = fit(total, width)
-  }
-  return [head, lastRow, estimate, totalRow, second, planRow, warningRow].filter((r) => r && r.length > 0)
+  return bandModel(a)
 }
 
 
@@ -375,6 +333,7 @@ const REASON = {
 
 export function reasonText(h) {
   if (!h) return ''
+  if (cacheStayText(h)) return cacheStayText(h)
   if (isStr(h.reason) && REASON[h.reason]) return REASON[h.reason]
   if (h.phase === 'applied' && isStr(h.tier)) return h.tier + ' prompt'
   if (h.phase === 'kept') return 'kept your model'
@@ -393,8 +352,9 @@ export function historyLine(h) {
   const from = tagOf(h.from) || '?'
   const to = tagOf(h.to) || '?'
   const scope = (SCOPE[h.scope] || 'main') + (isStr(h.agentType) ? ' ' + h.agentType : '')
-  const saved = isNum(h.estSavedUsd) ? (h.estSavedUsd < 0 ? 'est. -' + usd(-h.estSavedUsd) : 'est. ' + usd(h.estSavedUsd)) : ''
-  return pad(isNum(h.at) ? stamp(h.at) : '-', 14) + pad(scope, 18) + from + ' → ' + to + (reasonText(h) ? SEP + reasonText(h) : '') + (saved ? SEP + saved : '')
+  const saved = h.measured ? '' : isNum(h.estSavedUsd) ? (h.estSavedUsd < 0 ? 'est. -' + usd(-h.estSavedUsd) : 'est. ' + usd(h.estSavedUsd)) : ''
+  const raised = effortRaise(h.from?.effort, h.to?.effort)
+  return pad(isNum(h.at) ? stamp(h.at) : '-', 14) + pad(scope, 18) + from + ' → ' + to + (reasonText(h) ? SEP + reasonText(h) : '') + (raised ? SEP + raised : '') + (saved ? SEP + saved : '')
 }
 
 function homeTab(a) {
@@ -404,37 +364,63 @@ function homeTab(a) {
   const blank = () => L.push({ style: 'plain', text: ' ' })
   L.push({ mark: true })
   add('title', WORDS.product + SEP + 'v' + PRODUCT_VERSION)
-  add('dim', 'Routing, cost and plan for Claude Code. Prices are ' + LABEL + '; savings are always estimates.')
+  add('dim', 'Routing, cost and plan for Claude Code. Prices are ' + LABEL + '; local savings use measured token classes.')
   blank()
   const m = a.meter
+  const r = a.routingState
+  const decision = r?.current && !['deciding', 'off'].includes(r.current.phase) ? r.current : r?.recent?.at(-1)
+  if (decision) {
+    const raised = effortRaise(decision.named?.effort ?? r.named?.effort, decision.chosen?.effort)
+    const detail = [tagOf(decision.chosen), isStr(decision.tier) && decision.tier !== 'kept' ? 'IQ rated it ' + decision.tier : null,
+      reasonText(decision), raised].filter(Boolean)
+    add('plain', 'Last decision: ' + detail.join(SEP))
+  }
+  const prompt = m?.prompt || m?.session?.last_prompt || m?.session?.prompts?.[0]
+  if (prompt) {
+    const spent = prompt.measured ? measuredDollars(prompt.measured.paid_usd) : usd(prompt.spend_usd ?? prompt.usd)
+    const floor = prompt.measured ? prompt.measured.paid_complete === false : prompt.unpriced > 0 || prompt.advisorUnpriced > 0
+    add('plain', 'This prompt: ' + spent + (floor ? '+' : '') + ' (' + SHORT + ')' + SEP + plural(prompt.calls, 'call', 'calls'))
+  } else add('dim', 'This prompt: no calls yet.')
   add('head', 'This session')
-  if (m && m.session && isNum(m.session.calls) && m.session.calls > 0) {
+  if (m?.session?.measured) {
+    add('plain', measuredSpendLine(m.session.measured) + ' (' + SHORT + ')')
+    add(m.session.measured.saved_usd < 0 ? 'warn' : 'plain', 'Saved ' + measuredDollars(m.session.measured.saved_usd) + ' (' + SHORT + ')')
+  } else if (m && m.session && isNum(m.session.calls) && m.session.calls > 0) {
     add('plain', usd(m.session.usd) + (totalIsFloor(m.session) ? '+' : '') + ' (' + SHORT + ')' + SEP + plural(m.session.calls, 'call', 'calls') + (isNum(m.session.active_hours) && m.session.active_hours >= 0.02 ? SEP + hours(m.session.active_hours) + ' active' : ''))
     for (const note of floorNotes(m.session)) add('dim', note)
   } else add('dim', 'Nothing priced yet.')
+  if (!m?.session?.measured) {
+    const parts = m?.session ? sessionParts({ ...m.session, activeHours: m.session.active_hours, columns: 400 }) : null
+    if (parts?.rate) add('plain', 'Pace: ' + parts.rate + ' (' + SHORT + ')')
+    const saved = r?.session?.est_saved_usd
+    add('plain', 'Saved ' + (isNum(saved) ? (saved < 0 ? '-' : '') + usd(saved) + ' est.' : 'n/a') + ' (' + SHORT + ')')
+  }
+  if (r?.usage) add('plain', 'Routing decisions this month: ' + count(r.usage.decisions) + ' of ' + count(r.usage.allowance) + '.')
   const tag = tagOf(v && v.served)
   if (tag) add('plain', 'Serving: ' + tag + (isRouted(v) === null ? '' : SEP + (isRouted(v) ? WORDS.routed : WORDS.notRouted)))
   if (v && v.routing) {
-
     if (a.routingState && a.routingState.status === 'paused_plan') add('warn', planPauseLine(a.routingState))
     else if (a.routingState && a.routingState.status !== 'off') {
       const c = v.routing.counts
-      add('route_down', 'Routing is on' + (c && isNum(c.prompts) ? SEP + count(c.routed) + ' of ' + plural(c.prompts, 'prompt', 'prompts') + ' routed' : ''))
-      if (isNum(v.routing.estSavedUsdTotal)) add(v.routing.estSavedUsdTotal > 0 ? 'route_down' : 'plain', (v.routing.estSavedUsdTotal < 0 ? 'est. extra ' : 'est. saved ') + usd(Math.abs(v.routing.estSavedUsdTotal)) + ' (' + SHORT + ')')
-    } else add('dim', 'Routing is off. No prompts or subagent briefs are sent to IQ.')
+      add(a.routingState.status === 'on' ? 'route_down' : 'warn', a.routingState.status === 'on' ? 'Routing is on' + (c && isNum(c.prompts) ? SEP + count(c.routed) + ' of ' + plural(c.prompts, 'prompt', 'prompts') + ' routed' : '') : 'Routing is paused. See Routing for details.')
+    } else if (v.routing.status === 'paused_plan') add('warn', planPauseLine(a.routingState))
+    else add('dim', 'Routing is off. No prompts or subagent briefs are sent to IQ.')
     add('dim', FORCE_SERVER ? BRIEF_NOTE_SWITCH : BRIEF_NOTE)
   }
-  const forecast = forecastChunk(v, { spentUsd: m && m.session ? m.session.usd : null, advisorUnpriced: m && m.session ? m.session.advisorUnpriced : 0 })
+  const forecast = m?.session?.measured ? null : forecastChunk(v, m)
   if (forecast) add(forecast.style, forecast.text)
   const cc = cacheChunk(v, a.nowMs)
   if (cc) add(cc.style === 'warn' ? 'warn' : 'plain', cc.text)
   const pc = planChunk(v, a.nowMs)
   if (pc) add(pc.style === 'warn' ? 'warn' : 'plain', pc.text)
+  const budget = budgetChunk(v)
+  if (budget) add(budget.style, budget.text)
   if (a.firstRun) {
     blank()
     add('head', 'Welcome. Three steps')
     add('plain', '1. Turn routing on (Settings, or /iq-route on). It needs your IQ key and Personal ($6/month) or higher, and starts off in every session.')
-    add('plain', v.settings && v.settings.forecastSource === 'server' ? '2. Check measured usage, plan limits and the cache clock. Personal adds rough session cost estimates in the band and Cost.' : '2. Pick how you want spend measured in Settings: dollars (' + SHORT + ') or percent of your plan.')
+
+    add('plain', v.settings && v.settings.forecastSource === 'server' ? '2. Check measured spend, hourly pace and plan limits in /iq Home and Cost.' : '2. Pick how you want spend measured in Settings: dollars (' + SHORT + ') or percent of your plan.')
     add('plain', '3. Come back to /iq any time: Routing shows what IQ chose, Plan shows when you would hit your limits.')
     L.push({ control: { key: 'onboarded', label: 'Got it', hotkey: 'g', do: { kind: 'onboarded' } } })
   }
@@ -453,24 +439,50 @@ function routingLines(a, tabs) {
   }
   blank()
   L.push({ style: 'head', text: 'History' + SEP + 'main thread, subagents, advisors' })
-  if (r && isNum(r.estSavedUsdTotal)) L.push({ style: r.estSavedUsdTotal > 0 ? 'route_down' : 'plain', text: 'Running total: ' + (r.estSavedUsdTotal < 0 ? 'est. extra ' : 'est. saved ') + usd(Math.abs(r.estSavedUsdTotal)) + ' (' + SHORT + ')' })
+  if (!a.meter?.session?.measured && r && isNum(r.estSavedUsdTotal)) L.push({ style: r.estSavedUsdTotal > 0 ? 'route_down' : 'plain', text: 'Running total: ' + (r.estSavedUsdTotal < 0 ? 'est. extra ' : 'est. saved ') + usd(Math.abs(r.estSavedUsdTotal)) + ' (' + SHORT + ')' })
   const hist = r && Array.isArray(r.history) ? r.history.slice(-14).reverse() : []
   if (hist.length === 0) L.push({ style: 'dim', text: 'No routing decisions yet this session.' })
   else {
-    L.push({ style: 'dim', text: pad('when', 14) + pad('scope', 18) + 'from → to, why, est. saved (' + SHORT + ')' })
-    for (const h of hist) L.push({ style: h.phase === 'applied' ? 'route_down' : 'plain', text: historyLine(h) })
+    L.push({ style: 'dim', text: pad('when', 14) + pad('scope', 18) + 'from → to, why' + (a.meter && a.meter.session && a.meter.session.measured ? '' : ', est. saved (' + SHORT + ')') })
+    for (const h of hist) L.push({ style: h.phase === 'applied' ? 'route_down' : 'plain', text: historyLine(a.meter && a.meter.session && a.meter.session.measured ? { ...h, measured: true } : h) })
   }
   return L
 }
 
 function planLines(a, tabs) {
+  const mode = modeOf(a.view)
+  const facts = LIMIT_AWARE_ENABLED && a.view && a.view.limitFacts
+  const ended = planEnded(a.view, a.nowMs)
+  if (facts) {
+    
+    const finished = [ended.five && 'five_hour', ended.week && 'seven_day'].filter(Boolean)
+    const lines = [{ style: 'title', text: 'Plan' }, ...limitPlanLines(facts, finished).map((text) => ({
+      style: text.startsWith('No Claude usage left') ? 'warn' : 'plain', text,
+    }))]
+    if (facts.billing_mode !== 'api' && !(facts.rows || []).length && finished.length === 0) lines.push({ style: 'dim', text: LIMIT_SETTINGS_TEXT.missing })
+    if (mode) {
+      lines.push({ style: 'plain', text: mode.activeLine })
+      if (mode.fiveHourLine) lines.push({ style: (a.view.savings.billingMode || facts.billing_mode) === 'subscription' ? 'plain' : 'dim', text: mode.fiveHourLine })
+      if (mode.dollarLine) lines.push({ style: 'dim', text: mode.dollarLine })
+      if (mode.explanation) lines.push({ style: 'dim', text: mode.explanation })
+    }
+    
+    const graph = tabs[2].lines.findIndex((line) => line.text && line.text.startsWith('Dollars per prompt this session'))
+    if (graph >= 0) lines.push({ style: 'plain', text: ' ' }, ...tabs[2].lines.slice(graph))
+    return lines
+  }
+  if (mode) {
+    const s = a.view.savings
+    const rows = savingsPlanRows(a.rateLimits, s.planType, a.nowMs)
+    return [{ style: 'title', text: 'Plan' }, ...rows.map((text) => ({ style: 'plain', text })),
+      ...(mode.fiveHourLine ? [{ style: 'plain', text: mode.fiveHourLine }] : []),
+      ...(mode.explanation ? [{ style: 'dim', text: mode.explanation }] : [])]
+  }
   const L = tabs[2].lines.slice()
   const p = a.view && a.view.plan
   const add = (style, text) => L.push({ style, text })
   if (p && (isNum(p.fiveHourPct) || isNum(p.weeklyPct))) {
-
-    const live = (hitAt, resetsAt) => (windowFinished(viewResetMs(resetsAt), a.nowMs) ? null : hitAt)
-    const pace = etaText(live(p.fiveHourHitAt, p.fiveHourResetsAt), a.nowMs) || etaText(live(p.weeklyHitAt, p.weeklyResetsAt), a.nowMs)
+    const pace = (!ended.five && etaText(p.fiveHourHitAt, a.nowMs)) || (!ended.week && etaText(p.weeklyHitAt, a.nowMs))
     if (pace) add('dim', 'At the current pace, a plan window ' + pace + '.')
     if (isNum(p.stretchPct)) add('route_down', WORDS.stretch + ' ~' + Math.round(p.stretchPct) + '% est.')
   }
@@ -488,12 +500,46 @@ function settingsTab(a) {
   add('dim', 'Routing lasts for this session. Other preferences are saved for you.')
   add('plain', 'IQ destination: ' + displayText(a.destinationHost || 'gateway.iq-routing.com'))
   add('plain', ' ')
+  const facts = LIMIT_AWARE_ENABLED && a.view && a.view.limitFacts
+  if (SAVINGS_MODES_ENABLED || facts) {
+    add('plain', LIMIT_SETTINGS_TEXT.type)
+    add('dim', facts ? authKindLine(facts.authKind) : 'Detected: ' + (a.view && a.view.savings ? a.view.savings.detected : 'unknown'))
+    L.push({ controls: PLAN_TYPE_CHOICES.map(([value, label]) => ({
+      key: 'plan-type-' + value, label: ((s.planType || 'auto') === value ? '● ' : '') + label, do: { kind: 'set', key: 'planType', value },
+    })) })
+  }
+  if (facts) {
+    add('plain', LIMIT_SETTINGS_TEXT.tier)
+    L.push({ controls: PLAN_TIER_CHOICES.map(([value, label]) => ({
+      key: 'plan-tier-' + value, label: ((s.planTier || 'unknown') === value ? '● ' : '') + label, do: { kind: 'set', key: 'planTier', value },
+    })) })
+    add('plain', LIMIT_SETTINGS_TEXT.fable)
+    L.push({ controls: [[false, 'Off'], [true, 'On']].map(([value, label]) => ({
+      key: 'allow-fable-' + value, label: ((s.allowFable === true) === value ? '● ' : '') + label, do: { kind: 'set', key: 'allowFable', value },
+    })) })
+    if (s.allowFable !== true) add('dim', LIMIT_SETTINGS_TEXT.noFable)
+    add('plain', LIMIT_SETTINGS_TEXT.billing)
+    L.push({ controls: FABLE_BILLING_CHOICES.map(([value, label]) => ({
+      key: 'fable-billing-' + value, label: ((s.fableBilling || 'auto') === value ? '● ' : '') + label, do: { kind: 'set', key: 'fableBilling', value },
+    })) })
+  }
+  if (USAGE_REPORTS_ENABLED) {
+    add('plain', 'Usage reporting')
+    L.push({ controls: [['on', 'On'], ['off', 'Off']].map(([value, label]) => ({ key: 'usage-reporting-' + value,
+      label: (s.usageReporting === value ? '● ' : '') + label, do: { kind: 'set', key: 'usageReporting', value } })) })
+    add('dim', a.view && a.view.savings && a.view.savings.reportingActive ? 'Usage reporting is on while routing is on.' : 'Usage reporting is off on this device.')
+  }
   const on = (b) => (b ? 'on' : 'off')
   const routingOn = !!(a.view && a.view.routing && a.view.routing.on)
   L.push({ style: 'plain', text: pad('Routing', 22) + on(routingOn) })
   if (a.canRoute === true) L.push({ control: { key: 'routing', label: routingOn ? 'Turn routing off' : 'Turn routing on', hotkey: 'r', do: { kind: 'routing', value: !routingOn } } })
   else add('dim', 'Turn it on for this session by typing /iq-route on (and /iq-route off to stop). It starts off every time.')
+  if (KEEP_ROUTING_ON_ENABLED && a.keepRoutingEnabled === true) {
+    if (s.keepRoutingOn === true && s.routingEligible === false) add('plain', LOGIN_SUCCESS.free)
+    L.push({ control: { key: 'keep-routing', label: s.keepRoutingOn === true ? 'Stop keeping routing on' : 'Keep routing on', hotkey: 'f', do: { kind: 'set', key: 'keepRoutingOn', value: s.keepRoutingOn !== true } } })
+  }
   L.push({ style: 'plain', text: pad('Animation', 22) + on(s.animation !== false) + source('animation') })
+
   L.push({ control: { key: 'animation', label: s.animation !== false ? 'Turn animation off' : 'Turn animation on', hotkey: 'a', do: { kind: 'set', key: 'animation', value: s.animation === false } } })
   add('plain', ' ')
   L.push({ style: 'plain', text: pad('Budget unit', 26) + (s.budgetUnit === 'plan_pct' ? 'percent of your plan' : 'dollars (' + SHORT + ')') + source('budgetUnit') })
@@ -510,19 +556,20 @@ function settingsTab(a) {
     add('dim', 'A task\'s explicit budget takes precedence. Use /iq-budget <amount> [usd|%] or /iq-budget off.')
   }
   add('plain', ' ')
-  if (FORCE_SERVER || s.forecastSource === 'server') add('dim', 'Personal adds rough session cost estimates from IQ in the band and /iq Cost. Measured cost is always shown.')
+  if (FORCE_SERVER || s.forecastSource === 'server') add('dim', 'Measured spend and hourly pace appear in /iq Home and Cost. The band shows only IQ, model and thinking.')
   else add('dim', 'Either way an estimate is early and can be far off, most on long sessions. Prices are API-equivalent.')
   add('plain', ' ')
   if (FORCE_SERVER || s.forecastSource === 'server') {
-    add('dim', 'Cost estimate requests send usage numbers, supported model and thinking-level labels, and a random session number. Prompts, answers, files and tool contents are not sent for cost estimates.')
-    add('dim', 'With routing on, your typed prompts from this session and model, effort, elapsed-time and token-count facts also go to IQ (best-effort secret scrubbing; about 8,000 tokens at most).')
+    add('dim', 'Session cost and pace are measured locally from reported usage. No server forecasts are requested for measured sessions.')
+    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time and token-count facts.')
     add('dim', FORCE_SERVER ? BRIEF_NOTE_SWITCH : BRIEF_NOTE)
   } else {
-    add('dim', 'With routing on, your typed prompts from this session and model, effort, elapsed-time and token-count facts go to IQ (best-effort secret scrubbing; about 8,000 tokens at most).')
+    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time and token-count facts.')
     add('dim', BRIEF_NOTE)
   }
   if (dashboardAvailable) add('dim', 'Your IQ key reads session defaults even with routing off. Settings requests send no prompt content.')
   add('dim', 'Routing needs your IQ key and Personal ($6/month) or higher, and starts off in every session.')
+
   return L
 }
 
@@ -531,9 +578,9 @@ function settingsTab(a) {
 
 export function skinTabs(a) {
   const base = paneTabs({ meter: a.meter, routing: a.routingState, read: a.read, surface: a.surface, columns: a.columns, nowMs: a.nowMs }).tabs
-  const forecast = forecastChunk(a.view, { spentUsd: a.meter && a.meter.session ? a.meter.session.usd : null, advisorUnpriced: a.meter && a.meter.session ? a.meter.session.advisorUnpriced : 0 })
+  const forecast = forecastChunk(a.view, a.meter)
   const session = a.meter && a.meter.session
-
+  
   const cc = cacheChunk(a.view, a.nowMs)
   const clock = cacheClock(a.view && a.view.cache, a.nowMs)
   const began = clock && clock.startTokens !== null && clock.addedTokens !== null ? WORDS.cacheStarted + ' ' + tokenSize(clock.startTokens) + SEP + tokenSize(clock.addedTokens) + ' ' + WORDS.cacheAdded : null
@@ -544,7 +591,7 @@ export function skinTabs(a) {
     ...(began ? [{ style: 'dim', text: began }] : []),
     ...(cc.rebuild ? [{ style: 'dim', text: cc.rebuild }] : []),
   ] : []
-  const costLines = FORCE_SERVER && session ? [
+  const costLines = session?.measured ? [...base[1].lines, ...cacheLines] : FORCE_SERVER && session ? [
     { style: 'title', text: 'Measured cost · API-equivalent dollars' },
     { style: 'plain', text: usd(session.usd) + (totalIsFloor(session) ? '+' : '') + SEP + plural(session.calls, 'call', 'calls') },
     { style: 'dim', text: 'Measured calls since IQ Code started in this session.' },
@@ -553,6 +600,19 @@ export function skinTabs(a) {
     ...sessionCostLines(a.meter),
   ] : [...base[1].lines, ...(session ? floorNotes(session).map((text) => ({ style: 'warn', text })) : []), ...cacheLines]
   if (forecast) costLines.push(forecast)
+  const mode = modeOf(a.view)
+  if (mode && !(session && session.measured)) {
+    if (a.view.savings.planType === 'subscription') for (const l of costLines) if (l.text && l.text.includes('$')) l.style = 'dim'
+    const s = a.view.savings
+    for (const text of receiptText(s.receipt, { planType: s.planType, free: s.free, billingMode: s.billingMode, creditBilledFamily: s.creditBilledFamily, ...mode }).split('\n')) costLines.push({ style: text === mode.dollarLine || text === mode.explanation ? 'dim' : 'plain', text })
+    if (s.fableUnknown) costLines.push({ style: 'dim', text: 'Fable billing: unknown · est. savings unavailable' })
+    const billing = LIMIT_AWARE_ENABLED && (a.view.billingReceipt || s.billingReceipt)
+    if (billing) {
+      for (const turn of billing.turns || []) costLines.push({ style: turn.basis === 'unknown' ? 'dim' : 'plain', text: receiptBillingTurn(turn) })
+      for (const text of receiptBillingTotals(billing.totals || {})) costLines.push({ style: 'plain', text })
+    }
+    costLines.push({ control: { key: 'receipt', label: 'Copy receipt', do: { kind: 'receipt' } } })
+  }
   return {
     tabs: [
       { id: 'home', title: 'Home', lines: homeTab(a) },

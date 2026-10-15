@@ -1,8 +1,12 @@
+import { VERSION } from './pins.js'
+import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
+import { withoutInjectedBlocks } from './trivial_turn.js'
 
 
 
 
 import { canonicalModel, tierOf, EFFORTS } from './models.js'
+import { limitsBlock } from './limits.js'
 
 export const DEFAULT_BASE = 'https://gateway.iq-routing.com/v1'
 export const CLIENT_NAME = 'claude-code-mod'
@@ -25,36 +29,12 @@ export const ROUTING_KEY_TEXT = 'Routing is paused: IQ did not accept your key. 
 
 export const FREE_ROUTING = Object.freeze({ monthlyCode: 'free_quota_exhausted', dailyCode: 'free_global_daily_quota_exhausted', allowance: 100,
   monthlyText: ROUTING_REFUSED_TEXT, dailyText: ROUTING_REFUSED_TEXT })
-export const BACKOFF_MS = 10 * 60 * 1000
-export const HISTORY_TOKENS = 8000
+export const BACKOFF_MS = 10 * 60 * 1000 
+export const HISTORY_TOKENS = 8000 
 export const CHARS_PER_TOKEN = 4
 export const MAX_HISTORY_MESSAGES = 24
 
 
-
-const INJECTED_TAGS = [
-  'system-reminder', 'command-name', 'command-message', 'command-args',
-  'local-command-stdout', 'local-command-stderr', 'local-command-caveat',
-  'bash-input', 'bash-stdout', 'bash-stderr', 'user-prompt-submit-hook',
-  'ide_selection', 'ide_opened_file', 'new-context', 'unknown-block',
-  'launch-selected-element', 'preview-annotation-context', 'artifact-view-context',
-]
-
-function withoutInjectedBlocks(t) {
-  const tags = new RegExp('<(/?)(' + INJECTED_TAGS.join('|') + ')(?=[\\s/>])[^>]{0,256}>', 'gi')
-  const stack = []
-  let out = '', cursor = 0
-  for (const match of t.matchAll(tags)) {
-    if (stack.length === 0) out += t.slice(cursor, match.index)
-    const name = match[2].toLowerCase()
-    if (match[1]) {
-      const at = stack.lastIndexOf(name)
-      if (at >= 0) stack.length = at
-    } else if (!/\/\s*>$/.test(match[0])) stack.push(name)
-    cursor = match.index + match[0].length
-  }
-  return out + (stack.length === 0 ? t.slice(cursor) : '')
-}
 
 export function cleanText(t) {
   if (typeof t !== 'string') return ''
@@ -62,7 +42,7 @@ export function cleanText(t) {
   const clean = raw.replace(/<\/?pasted_content(?=[\s/>])[^>]{0,256}>/gi, '').trim()
   const chars = (text) => text.replace(/\s/g, '').length
   const rawChars = chars(raw)
-
+  
   return rawChars > 0 && (clean === '' || chars(clean) < rawChars * 0.1) ? raw : clean
 }
 
@@ -119,17 +99,39 @@ export function subagentType(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(value) ? value : 'unknown'
 }
 
+
+
+function withoutCompleteToolBlocks(text) {
+  const opens = [], ranges = []
+  for (const tag of text.matchAll(/<(\/?)tool(?=[\s/>])[^>]{0,256}>/gi)) {
+    if (!tag[1]) {
+      if (!/\/\s*>$/.test(tag[0])) opens.push(tag.index)
+      continue
+    }
+    const start = opens.pop()
+    if (start === undefined) continue
+    while (ranges.length && ranges[ranges.length - 1][0] >= start) ranges.pop()
+    ranges.push([start, tag.index + tag[0].length])
+  }
+  let out = '', cursor = 0
+  for (const [start, end] of ranges) { out += text.slice(cursor, start); cursor = end }
+  return out + text.slice(cursor)
+}
+
 export function buildRouteBody(rows, promptText, secrets, facts) {
   const built = buildEstimateBody(rows, promptText, secrets)
   const routing = { chosen: { ...facts.chosen }, last_served: facts.last_served ? { ...facts.last_served } : null,
     seconds_since_last_call: facts.seconds_since_last_call ?? null, context_tokens: facts.context_tokens ?? null,
-    cached_prefix_tokens: facts.cached_prefix_tokens || 0, cache_ttl_seconds: facts.cache_ttl_seconds === null ? null : facts.cache_ttl_seconds === 3600 ? 3600 : 300,
+    cached_prefix_tokens: facts.cached_prefix_tokens || 0, cache_ttl_seconds: [300, 3600].includes(facts.cache_ttl_seconds) ? facts.cache_ttl_seconds : null,
     turn_kind: facts.turn_kind || 'main' }
+  if (LIMIT_AWARE_ENABLED && facts.limits) routing.limits = limitsBlock({ ...facts.limits,
+    ...(typeof facts.allow_fable === 'boolean' ? { allow_fable: facts.allow_fable } : {}) })
   if (routing.turn_kind === 'subagent') {
     routing.subagent_type = subagentType(facts.subagent_type)
     routing.subagent_read_only = facts.subagent_read_only === true
     routing.subagent_rating_opt_in = true
-    routing.subagent_brief = scrub(nonemptyPrompt(facts.subagent_brief || ''), secrets).slice(0, 16000)
+    
+    routing.subagent_brief = scrub(withoutCompleteToolBlocks(nonemptyPrompt(facts.subagent_brief || '')), secrets).slice(0, 16000)
   }
   return { body: { ...built.body, contract_version: 2, routing }, sent: built.sent }
 }
@@ -228,6 +230,78 @@ export function parseSettingsResponse(res) {
 }
 
 
+export const AUTH_VERIFICATION_URL = 'https://iq-routing.com/iq-code/activate'
+export const AUTH_RESPONSE_BYTES = 8192
+const AUTH_ACTIONS = new Set(['start', 'token', 'complete', 'logout'])
+export function authRequest({ base, dev = false, action, secret, platform, version }) {
+  const b = baseUrl(base, dev)
+  if (!b || !AUTH_ACTIONS.has(action)) return null
+  const headers = { 'content-type': 'application/json', accept: 'application/json' }
+  if (action !== 'start') {
+    if (typeof secret !== 'string' || secret.length < 1 || secret.length > 4096 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(secret)) return null
+    headers.authorization = 'Bearer ' + secret
+  }
+  const os = ({ darwin: 'macos', linux: 'linux', win32: 'windows', macos: 'macos', windows: 'windows' })[platform] || 'unknown'
+  const label = typeof version === 'string' && /^[0-9]{1,3}(?:\.[0-9]{1,3}){1,3}(?:-[a-z0-9.]{1,12})?$/.test(version) && version.length <= 32 ? version : VERSION
+  const body = action === 'start' ? { client_id: 'iq-code', version: 1, os, client_version: label } :
+    action === 'token' ? { client_id: 'iq-code', grant_type: 'urn:ietf:params:oauth:grant-type:device_code' } : {}
+  const path = action === 'logout' ? '/iq-code/logout' : '/iq-code/device/' + action
+  
+  
+  
+  return { url: b + path, init: { method: 'POST', redirect: 'error', headers, body: JSON.stringify(body) } }
+}
+
+function authExpiry(value) {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return undefined
+  const [year, month, day, hour, minute, second] = value.slice(0, 19).split(/[-T:]/).map(Number)
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate() ||
+    hour > 23 || minute > 59 || second > 59 || /[+-]/.test(value.slice(19)) &&
+    (Number(value.slice(-5, -3)) > 23 || Number(value.slice(-2)) > 59)) return undefined
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined
+}
+
+
+export function parseAuthResponse(res, req, action) {
+  if (!res || !Number.isInteger(res.status) || !req || !AUTH_ACTIONS.has(action)) return { ok: false, code: 'malformed' }
+  if (res.status >= 300 && res.status < 400 || res.redirected === true) return { ok: false, code: 'redirect_rejected' }
+  if (res.url !== undefined && res.url !== '') {
+    try { if (new URL(res.url).origin !== new URL(req.url).origin) return { ok: false, code: 'redirect_rejected' } }
+    catch (_) { return { ok: false, code: 'redirect_rejected' } }
+  }
+  const text = res.text === undefined && [204, 205].includes(res.status) ? '' : res.text
+  if (typeof text !== 'string' || text.length > AUTH_RESPONSE_BYTES || new TextEncoder().encode(text).length > AUTH_RESPONSE_BYTES) return { ok: false, code: 'malformed' }
+  let j = {}
+  try { if (text !== '') j = JSON.parse(text) } catch (_) { return { ok: false, code: 'malformed' } }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, code: 'malformed' }
+  const rawError = typeof j.error === 'string' ? j.error : j.error && j.error.code || j.code
+  const known = new Set(['authorization_pending', 'slow_down', 'access_denied', 'expired_token', 'invalid_grant'])
+  if (res.status < 200 || res.status >= 300 || rawError) {
+    const code = known.has(rawError) ? rawError : res.status === 429 ? 'rate_limited' : res.status >= 500 ? 'unavailable' :
+      res.status === 404 ? 'feature_unavailable' : [401, 403].includes(res.status) ? 'credential_rejected' : 'auth_failed'
+    return { ok: false, code }
+  }
+  if (action === 'start') {
+    if (typeof j.device_code !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(j.device_code) ||
+      typeof j.user_code !== 'string' || !/^[A-HJ-NP-Z2-9]{5}-[A-HJ-NP-Z2-9]{5}$/.test(j.user_code) ||
+      !Number.isInteger(j.expires_in) || j.expires_in < 1 || j.expires_in > 600 ||
+      !Number.isInteger(j.interval) || j.interval < 1 || j.interval > 60 ||
+      j.verification_uri !== undefined && j.verification_uri !== AUTH_VERIFICATION_URL) return { ok: false, code: 'malformed' }
+    return { ok: true, deviceCode: j.device_code, userCode: j.user_code, expiresIn: j.expires_in, interval: Math.max(5, j.interval) }
+  }
+  if (action === 'token') {
+    const key = typeof j.iq_api_key === 'string' ? j.iq_api_key : j.access_token
+    const expiry = authExpiry(j.expires_at)
+    if (typeof key !== 'string' || key.length < 1 || key.length > 4096 || !/^[A-Za-z0-9._~+\/-]+=*$/.test(key) || expiry === undefined || typeof j.routing_eligible !== 'boolean') return { ok: false, code: 'malformed' }
+    return { ok: true, key, keyExpiresAt: expiry, routingEligible: j.routing_eligible }
+  }
+  return { ok: true }
+
+}
+
+
 
 export function estimateRequest({ base, key, body, named, version, dev = false }) {
   const b = baseUrl(base, dev)
@@ -240,7 +314,10 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
     'x-iq-client': CLIENT_NAME + '/' + version,
   }
   if (named && typeof named.model === 'string' && named.model !== '') headers['x-iq-cc-named-model'] = canonicalModel(named.model)
-  if (named && EFFORTS.includes(named.effort)) headers['x-iq-cc-named-effort'] = named.effort
+  if (named && EFFORTS.includes(named.effort)) {
+    headers['x-iq-cc-named-effort'] = named.effort
+    if (named.effortExplicit === true) headers['x-iq-cc-effort-explicit'] = 'true'
+  }
   return { url: b + path, init: { method: 'POST', headers, body: JSON.stringify(body) } }
 }
 
@@ -257,10 +334,12 @@ export function consumeRouteReset(router, request) {
       body.routing.seconds_since_last_call = null
       request.init.body = JSON.stringify(body)
     }
-  } catch {}
+  } catch {} 
 }
 
 const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,80}$/
+export const MAX_ROUTE_HOLD = 32
+export const MAX_ROUTE_HOLD_SECONDS = 60
 
 
 
@@ -273,11 +352,15 @@ export function parseRoute(text) {
   }
   if (!j || typeof j !== 'object' || Array.isArray(j) || j.object !== 'iq.claude_code_route') return { ok: false, code: 'malformed' }
   const block = j.claude_code && typeof j.claude_code === 'object' && !Array.isArray(j.claude_code) ? j.claude_code : null
+  const hold = block && block.v === 2 ? block.hold : null
+  const expiry = block && block.v === 2 ? block.hold_expires_in_seconds : null
   return {
     ok: true,
     request_id: typeof j.request_id === 'string' && REQUEST_ID.test(j.request_id) ? j.request_id : null,
     tier: tierOf(block && block.tier) || tierOf(block && typeof block.reason_code === 'string' && block.reason_code.replace(/^iq_/, '')),
     block,
+    ...(Object.hasOwn(block || {}, 'hold') ? { hold: Number.isSafeInteger(hold) && hold >= 0 && hold <= MAX_ROUTE_HOLD ? hold : null } : {}),
+    ...(Object.hasOwn(block || {}, 'hold_expires_in_seconds') ? { hold_expires_in_seconds: Number.isSafeInteger(expiry) && expiry >= 1 && expiry <= MAX_ROUTE_HOLD_SECONDS ? expiry : null } : {}),
   }
 }
 
@@ -314,6 +397,7 @@ export function classifyResponse(res) {
   if (res.status >= 400 && code === FREE_ROUTING.dailyCode) return { kind: 'free_daily', code, usage }
   if ([401, 403].includes(res.status)) return { kind: 'auth_required', code: 'key_rejected' }
   if (res.status === 402) return { kind: 'plan_required', code: 'plan_required' }
+  if (LIMIT_AWARE_ENABLED && res.status === 409 && code === 'no_usage_left') return { kind: 'no_usage', code: 'no_usage_left' }
   if (res.status === 429) {
     if (code === ALLOWANCE_CODE) return { kind: 'allowance', code: 'allowance_exceeded' }
     return { kind: 'rate_limited', code: 'http_429' }

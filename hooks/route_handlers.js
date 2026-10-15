@@ -1,3 +1,4 @@
+import { LIMIT_AWARE_ENABLED } from './lib/usage_flags.js'
 
 
 import { registerThinSubagents } from './thin_subagent_handlers.js'
@@ -12,6 +13,22 @@ import { resolveBase, readAliasHost } from './lib/subagents.js'
 import { forecastSpend, forecastUnpriced } from './lib/tracker.js'
 
 
+function limitAccess($) {
+  return {
+    authorize: () => $.session.authorize(),
+    authStatus: async () => {
+      const result = await $.process.run(['claude', 'auth', 'status'])
+      return result?.exitCode === 0 ? result.stdout : null
+    },
+    apiKeyPresent: async () => {
+      const value = await $.env.get('ANTHROPIC_API_KEY')
+      return typeof value === 'string' && value.trim() !== ''
+    },
+    usage: () => $.session.usage(),
+    now: () => $.clock.now(),
+  }
+}
+
 function iqAccess($) {
   return {
     configured: () => C && C.pluginKey ? C.pluginKey() : undefined,
@@ -21,13 +38,14 @@ function iqAccess($) {
     user: () => $.settings.read({ source: 'user' }),
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'),
     disabled: () => $.env.get('IQ_ROUTER_DISABLED'),
+    blocked: () => State.getSetting('authBlocked') === true,
   }
 }
 
 const enabled = () => FORCE_SERVER
 
 
-const missed = (t) => (Number(t.unpriced) || 0) + (Number(t.advisorUnpriced) || 0)
+const missed = (t) => (Number(t.unpriced) || 0) + (Number(t.advisorUnpriced) || 0) + (Number(t.measured?.unpriced_calls) || 0)
 const safe = (p) => Promise.resolve(p).catch(() => undefined)
 let C = null
 let F = null
@@ -37,7 +55,7 @@ let ended = false
 let lifecycle = 'initial'
 let limit = null
 let taskStartUsd = 0
-let taskStartMissed = 0
+let taskStartMissed = 0 
 let budgetUnit = 'usd'
 let budgetExplicit = false
 let taskPct = { last: null, spent: 0 }
@@ -46,17 +64,27 @@ let helpersSeen = new Set()
 let spawnExpectedUsd = null
 let aliasNoticeShown = false
 
+export function cancelRouteWork() {
+  if (F) F.invalidate()
+  answerState = { state: 'unavailable', reasonCode: 'estimate_pending_first_call', pending: false }
+  State.update(sid, { forecast: null })
+}
+
 async function allowed($) {
+  const nowMs = await $.clock.now()
   return enabled() && !ended && C.getR().armed &&
     !isFreePlan(C.getR().plan || C.getR().usage) &&
-    statusOf(C.getR(), await $.clock.now()) === 'on' && !(await trafficOff(iqAccess($)))
+    !(LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(nowMs)) &&
+    statusOf(C.getR(), nowMs) === 'on' && !(await trafficOff(iqAccess($)))
+
 }
 
 function publishState(answer) {
   const t = C.getT()
   if (answer) answerState = answer
   const fc = F ? F.current() : null
-  const spent = Math.max(0, t.usd - taskStartUsd)
+  const ledgerUsd = t.measured?.paid_usd ?? null
+  const spent = ledgerUsd === null ? null : Math.max(0, ledgerUsd - taskStartUsd)
   const spentFloor = limit !== null && budgetUnit === 'usd' && missed(t) > taskStartMissed
   const window = C.getM().usage?.rateLimits?.find((w) => w.kind === 'five_hour' && typeof w.percentUsed === 'number' && Number.isFinite(w.percentUsed))
   if (window && limit !== null && budgetUnit === 'plan_pct') {
@@ -64,9 +92,9 @@ function publishState(answer) {
     taskPct.last = window.percentUsed
   }
   const budgetSpent = budgetUnit === 'plan_pct' ? taskPct.spent : spent
-
-  const status = limit === null ? 'none' : budgetSpent >= limit ? 'over' : 'ok'
-  State.update(sid, { forecast: { source: 'server', state: answerState.state, reasonCode: answerState.reasonCode, pending: answerState.pending, text: FORECAST_TEXT[answerState.state] || null, totalQ50Usd: fc ? fc.total_q50_usd : null, remainingQ50Usd: fc ? fc.remaining_q50_usd : null }, budget: { unit: limit === null ? null : budgetUnit, limit, spentUsd: limit === null ? t.usd : spent, spentFloor, spentPct: budgetUnit === 'plan_pct' && taskPct.last !== null ? taskPct.spent : null, forecast: null, status, suggestion: null }, advisor: { reserveUsd: null }, context: { compactSuggest: null } })
+  
+  const status = limit === null ? 'none' : budgetSpent === null ? 'unavailable' : budgetSpent >= limit ? 'over' : budgetSpent >= 0.8 * limit ? 'at_risk' : 'ok'
+  State.update(sid, { forecast: { source: 'server', state: answerState.state, reasonCode: answerState.reasonCode, pending: answerState.pending, text: FORECAST_TEXT[answerState.state] || null, totalQ50Usd: fc ? fc.total_q50_usd : null, remainingQ50Usd: fc ? fc.remaining_q50_usd : null }, budget: { unit: limit === null ? null : budgetUnit, limit, spentUsd: limit === null ? ledgerUsd : spent, spentFloor, spentPct: budgetUnit === 'plan_pct' && taskPct.last !== null ? taskPct.spent : null, forecast: null, status, suggestion: null }, advisor: { reserveUsd: null }, context: { compactSuggest: null } })
 }
 function publish($, answer) {
   publishState(answer)
@@ -96,12 +124,15 @@ function reset($, sessionStart = false) {
   aliasNoticeShown = false
   const session = sid
   F = newForecastClient({ now: () => Math.max(C.getM().nowMs, Date.now()), later: (ms, fn) => $.clock.after(ms, fn), fetch: async (url, init) => {
-
+    
     if (sid !== session || !(await allowed($))) return null
+    if (LIMIT_AWARE_ENABLED && C.refreshLimits) await C.refreshLimits(limitAccess($))
+    const nowMs = await $.clock.now()
+    if (sid !== session || ended || statusOf(C.getR(), nowMs) !== 'on' || LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(nowMs)) return null
     return $.http.fetch(url, init)
   }, onChange: (answer) => { if (!ended && enabled()) publish($, answer) } })
-
-
+  
+  
   State.resetSession(sid, !sessionStart)
   publish($)
 }
@@ -113,7 +144,7 @@ export function applyTaskDefaults($) {
   const settings = State.getView(sid).settings
   if (limit === settings.defaultTaskBudget && budgetUnit === settings.budgetUnit) return measureTaskBudget()
   if (budgetUnit !== settings.budgetUnit) {
-    taskStartUsd = C.getT().usd
+    taskStartUsd = C.getT().measured?.paid_usd ?? 0
     taskStartMissed = missed(C.getT())
     taskPct = { last: null, spent: 0 }
   }
@@ -130,7 +161,10 @@ export function measureTaskBudget() {
 
 async function request($) {
   if (!enabled() || ended || !C.getM().ready) return
-
+  if (C.getT().measured) return 
+  if (LIMIT_AWARE_ENABLED && C.refreshLimits) await C.refreshLimits(limitAccess($))
+  if (LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(await $.clock.now())) { if (F) F.invalidate(); return }
+  
   if (isFreePlan(C.getR().plan || C.getR().usage)) {
     if (sid !== C.getM().sessionId || !F) reset($)
     F.invalidate('forecast_not_paid')
@@ -161,6 +195,7 @@ async function request($) {
 }
 
 function schedule($) {
+  if (C.getT().measured) return
   if (enabled() && ended && sid !== C.getM().sessionId) reset($)
   if (!enabled() || ended) return
   const client = F, session = C.getM().sessionId
@@ -199,7 +234,7 @@ export function registerRoute(on, ctx) {
   })
   on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
     if (!enabled()) return next(e)
-
+    
     spawnExpectedUsd = latestSpawnPrice(e.subagentType, familyOf(e.model || e.parentModel))
     const session = sid, tracker = C.getT()
     const out = await next(e)
@@ -226,11 +261,11 @@ export function registerRoute(on, ctx) {
       const unit = parts[1] === 'usd' ? 'usd' : parts[1] ? 'plan_pct' : State.getSetting('budgetUnit')
       const amount = Number(parts[0])
       if (!(amount > 0) || !Number.isFinite(amount) || amount > (unit === 'plan_pct' ? 100 : 100000)) return { text: 'iq-budget: that amount is not usable.' }
-      limit = amount; budgetUnit = unit; budgetExplicit = true; taskStartUsd = t.usd; taskStartMissed = missed(t); taskPct = { last: null, spent: 0 }
+      limit = amount; budgetUnit = unit; budgetExplicit = true; taskStartUsd = t.measured?.paid_usd ?? 0; taskStartMissed = missed(t); taskPct = { last: null, spent: 0 }
     }
     else if (parts[0] !== '' && parts[0] !== 'status') return { text: 'iq-budget: use <amount> [usd|%], off or status.' }
     publish($)
     if (limit !== null && budgetUnit === 'plan_pct') return { text: taskPct.last === null ? 'iq-budget: waiting for the five-hour plan reading.' : 'iq-budget: ' + taskPct.spent.toFixed(1) + '% of ' + limit + '% used.' }
-    return { text: limit === null ? 'iq-budget: no task budget is set.' : 'iq-budget: $' + Math.max(0, t.usd - taskStartUsd).toFixed(2) + (missed(t) > taskStartMissed ? '+' : '') + ' of $' + limit.toFixed(2) + ' used (API-equivalent).' }
+    return { text: limit === null ? 'iq-budget: no task budget is set.' : 'iq-budget: $' + (t.measured?.paid_usd == null ? 'n/a' : Math.max(0, t.measured.paid_usd - taskStartUsd).toFixed(2)) + (missed(t) > taskStartMissed ? '+' : '') + ' of $' + limit.toFixed(2) + ' used (API-equivalent).' }
   })
 }

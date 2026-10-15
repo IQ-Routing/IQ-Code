@@ -1,3 +1,4 @@
+import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 import { FORCE_SERVER } from './runtime_mode.js'
 import { deadlineFrom, DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, ROUTE_IDLE_MS } from './iq_client.js'
 
@@ -13,11 +14,13 @@ import { deadlineFrom, DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, ROUTE_IDLE_MS } fr
 
 
 export const HISTORY_MAX = 50
-export const SETTING_KEYS = ['advisorMode', 'budgetUnit', 'animation', 'subagentRouting', 'forecastSource']
-export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: FORCE_SERVER, forecastSource: FORCE_SERVER ? 'server' : 'local' }
+export const SETTING_KEYS = ['advisorMode', 'budgetUnit', 'animation', 'subagentRouting', 'forecastSource', 'planType', 'usageReporting', 'planTier', 'allowFable', 'fableBilling', 'keepRoutingOn', 'authBlocked', 'routingEligible']
+export const DEFAULT_SETTINGS = { advisorMode: 'keep', budgetUnit: 'usd', animation: true, subagentRouting: FORCE_SERVER, forecastSource: FORCE_SERVER ? 'server' : 'local', planType: 'auto', usageReporting: 'on', planTier: 'unknown', allowFable: false, fableBilling: 'auto', keepRoutingOn: false, authBlocked: false, routingEligible: true }
 export const DASHBOARD_SETTING_KEYS = ['advisorMode', 'budgetUnit', 'animation', 'defaultTaskBudget']
 SETTING_KEYS.push('defaultTaskBudget')
 DEFAULT_SETTINGS.defaultTaskBudget = null
+
+
 
 
 
@@ -40,15 +43,15 @@ function resolvedSettings() {
   if (!settingsSessionActive) return out
   for (const k of DASHBOARD_SETTING_KEYS) out[k] = dashboard ? dashboard[k] : DEFAULT_SETTINGS[k]
   Object.assign(out, sessionChoices)
-
-
+  
+  
   if (dashboard && Object.hasOwn(sessionChoices, 'budgetUnit') && sessionChoices.budgetUnit !== dashboard.budgetUnit && !Object.hasOwn(sessionChoices, 'defaultTaskBudget')) out.defaultTaskBudget = null
   if (out.budgetUnit === 'plan_pct' && out.defaultTaskBudget > 100) out.defaultTaskBudget = null
   return out
 }
 
 export function startSettingsSession() {
-  settingsSessionActive = false
+  settingsSessionActive = false 
   dashboard = null
   pendingDashboard = undefined
   sessionChoices = {}
@@ -77,6 +80,31 @@ export function dashboardSources() {
   if (dashboard) for (const k of DASHBOARD_SETTING_KEYS) if (!Object.hasOwn(sessionChoices, k) && settings[k] === dashboard[k]) out[k] = true
   return out
 }
+let limitReading = {}
+
+export function getLimitReading() { return JSON.parse(JSON.stringify(limitReading)) }
+export function setLimitReading(value) {
+  const next = cleanLimitReading(value)
+  if (JSON.stringify(next) === JSON.stringify(limitReading)) return false
+  limitReading = next
+  persistNow()
+  return true
+}
+function cleanLimitReading(value) {
+  const v = value && typeof value === 'object' ? value : {}
+  const kinds = ['five_hour', 'seven_day', 'spend_limit', 'seven_day_opus', 'seven_day_sonnet', 'seven_day_overage_included', 'overage']
+  const rows = (Array.isArray(v.rows) ? v.rows : []).filter((r) => r && kinds.includes(r.kind) &&
+    isNum(r.percent_used) && r.percent_used >= 0 && r.percent_used <= 999.9 &&
+    (r.resets_at === null || Number.isSafeInteger(r.resets_at) && r.resets_at >= 0)).slice(0, 8)
+    .map((r) => ({ kind: r.kind, percent_used: Math.round(r.percent_used * 10) / 10, resets_at: r.resets_at }))
+  const familyStates = (Array.isArray(v.familyStates) ? v.familyStates : []).filter((f) => f &&
+    ['haiku', 'sonnet', 'opus', 'fable', 'mythos'].includes(f.family) && typeof f.exhausted === 'boolean' &&
+    (f.resets_at === null || Number.isSafeInteger(f.resets_at) && f.resets_at >= 0)).slice(0, 5)
+    .map((f) => ({ family: f.family, exhausted: f.exhausted, resets_at: f.resets_at }))
+  return { rows, signalAtMs: isNum(v.signalAtMs) && v.signalAtMs >= 0 ? v.signalAtMs : null, extraUsage: v.extraUsage === true, familyStates,
+    ...(isNum(v.exhaustionAtMs) && v.exhaustionAtMs >= 0 ? { exhaustionAtMs: v.exhaustionAtMs } : {}) }
+
+}
 
 function blank() {
   return {
@@ -103,7 +131,7 @@ function slot(sid) {
   if (!s) {
     s = blank()
     store.sessions.set(k, s)
-    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value)
+    if (store.sessions.size > 16) store.sessions.delete(store.sessions.keys().next().value) 
   }
   return s
 }
@@ -124,7 +152,7 @@ function notify() {
     try {
       fn()
     } catch (_) {
-
+      
     }
   }
 }
@@ -170,7 +198,13 @@ function valid(k, v) {
   if (k === 'advisorMode') return ADVISOR_MODES.includes(v)
   if (k === 'budgetUnit') return BUDGET_UNITS.includes(v)
   if (k === 'forecastSource') return v === (FORCE_SERVER ? 'server' : 'local')
-  return k === 'animation' || k === 'subagentRouting' ? typeof v === 'boolean' : false
+  if (k === 'planType') return ['auto', 'api', 'subscription'].includes(v)
+  if (k === 'usageReporting') return ['on', 'off'].includes(v)
+  if (k === 'planTier') return ['pro', 'max', 'team_standard', 'team_premium', 'enterprise', 'unknown'].includes(v)
+  if (k === 'allowFable') return typeof v === 'boolean'
+  if (k === 'fableBilling') return ['auto', 'plan_share', 'usage_credits'].includes(v)
+  return ['animation', 'subagentRouting', 'keepRoutingOn', 'authBlocked', 'routingEligible'].includes(k) ? typeof v === 'boolean' : false
+
 }
 
 
@@ -196,7 +230,7 @@ export function setSetting(k, v) {
   if (store.settings[k] === v) {
     if (pairedChanged) persistNow()
     if (wasDashboard || pairedChanged) notify()
-    return false
+    return false 
   }
   store.settings[k] = v
   if (!SESSION_ONLY_KEYS.includes(k)) persistNow()
@@ -209,18 +243,74 @@ export function loadSettings(obj) {
   const o = obj && typeof obj === 'object' ? obj : {}
   const next = { ...DEFAULT_SETTINGS }
   for (const k of SETTING_KEYS) if (!SESSION_ONLY_KEYS.includes(k) && valid(k, o[k])) next[k] = o[k]
-
-
+  
+  
   next.defaultTaskBudget = null
-  next.subagentRouting = DEFAULT_SETTINGS.subagentRouting
+  next.subagentRouting = DEFAULT_SETTINGS.subagentRouting 
   store.settings = next
+  if (LIMIT_AWARE_ENABLED && Object.hasOwn(o, 'limitReading')) limitReading = cleanLimitReading(o.limitReading)
+  store.pending = false
+
   notify()
+}
+
+let settingsWrites = Promise.resolve()
+export const settingsSettled = () => settingsWrites
+
+
+export function saveSettings(patch, write, guard = () => true) {
+  const operation = settingsWrites.then(async () => {
+    if (guard() !== true || typeof write !== 'function') return false
+    const values = patch && typeof patch === 'object' ? patch : {}
+    for (const [k, v] of Object.entries(values)) if (!SETTING_KEYS.includes(k) || !valid(k, v)) return false
+    if ((values.budgetUnit || getSetting('budgetUnit')) === 'plan_pct' && values.defaultTaskBudget > 100) return false
+    const before = { ...store.settings }
+    const beforeChoices = { ...sessionChoices }
+    
+    
+    const persistence = store.persist
+    store.persist = null
+    try { for (const [key, value] of Object.entries(values)) setSetting(key, value) }
+    finally { store.persist = persistence }
+    notify()
+    try {
+      await write(settingsText())
+      if (guard() !== true) {
+        store.settings = before
+        sessionChoices = beforeChoices
+        
+        try { await write(settingsText()) } catch (_) {
+          store.settings.authBlocked = true
+          store.settings.keepRoutingOn = false
+          try { await write(settingsText()) } catch (_) {}
+        }
+        notify()
+        store.pending = false
+        return false
+      }
+      store.pending = false
+      return true
+    } catch (_) {
+      
+      
+      if (values.authBlocked !== true && (Object.prototype.hasOwnProperty.call(values, 'keepRoutingOn') || Object.prototype.hasOwnProperty.call(values, 'authBlocked'))) { store.settings = before; sessionChoices = beforeChoices }
+      store.pending = false
+      notify()
+      return false
+    }
+  })
+  settingsWrites = operation.catch(() => false)
+  return operation
+}
+
+export function flushSettings(write) {
+  return saveSettings({}, async (text) => { if (store.pending) await write(text) })
 }
 
 export function settingsText() {
   const saved = { ...store.settings }
   for (const k of SESSION_ONLY_KEYS) delete saved[k]
-  return JSON.stringify({ v: 1, ...saved }, null, 1) + '\n'
+  return JSON.stringify({ v: 1, ...saved, ...(LIMIT_AWARE_ENABLED ? { limitReading } : {}) }, null, 1) + '\n'
 }
 
 
@@ -244,7 +334,7 @@ function persistNow() {
     const r = store.persist(settingsText())
     if (r && typeof r.catch === 'function') r.catch(() => {})
   } catch (_) {
-
+    
   }
 }
 
@@ -312,6 +402,8 @@ export function resetAll() {
   dashboard = null
   pendingDashboard = undefined
   sessionChoices = {}
+  limitReading = {}
+
   store.settings = { ...DEFAULT_SETTINGS }
   store.sessions = new Map()
   store.listeners = new Set()

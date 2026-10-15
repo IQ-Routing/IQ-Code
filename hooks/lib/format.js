@@ -1,3 +1,4 @@
+import { measuredPace } from './measured_cost.js'
 
 
 
@@ -5,8 +6,13 @@
 
 
 export const LABEL = 'API-equivalent'
+export function routingPreferenceLine(keep, armed, off, enabled) {
+  if (keep !== true || enabled !== true) return null
+  if (off === true) return 'Off this session; future interactive sessions will start on when controls permit.'
+  return armed === true ? 'Routing on · kept on' : 'Kept routing is saved; routing remains off under current controls.'
+}
 const SHORT_LABEL = 'API-eq.'
-const SEP = ' · '
+const SEP = ' · ' 
 const BARS = '▁▂▃▄▅▆▇█'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -15,6 +21,19 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 
 const isNum = (x) => typeof x === 'number' && Number.isFinite(x)
+
+
+
+
+
+
+export function windowReset(resetsAt, nowMs) {
+  const atMs = typeof resetsAt === 'string' ? Date.parse(resetsAt) : resetsAt
+  if (!isNum(atMs)) return { passed: false, atMs: null }
+  return { passed: isNum(nowMs) && atMs <= nowMs, atMs }
+}
+
+export const WINDOW_RESET = 'reset'
 
 
 export function usd(x) {
@@ -49,7 +68,7 @@ export function tokens(n) {
 
 export function tokenSize(n) {
   if (!isNum(n) || n < 0) return '?'
-  const one = (x) => String(Number(x.toFixed(1)))
+  const one = (x) => String(Number(x.toFixed(1))) 
   if (n < 1e3) return String(Math.round(n)) + ' tok'
   if (n < 1e6 && Math.round(n / 1e3) < 1e3) return (n < 1e4 ? one(n / 1e3) : String(Math.round(n / 1e3))) + 'K tok'
   return one(n / 1e6) + 'M tok'
@@ -57,7 +76,7 @@ export function tokenSize(n) {
 
 export function percent(p) {
   if (!isNum(p)) return '?%'
-  return String(Math.round(p)) + '%'
+  return String(Math.round(p)) + '%' 
 }
 
 export function hours(h) {
@@ -94,31 +113,85 @@ export function resetText(iso, withDay) {
   return (withDay ? DAYS[d.getDay()] + ' ' : '') + clock12(d)
 }
 
-
-
-export function resetAtMs(resetsAt) {
-  if (typeof resetsAt !== 'string' || resetsAt === '') return null
-  const t = Date.parse(resetsAt)
-  return Number.isNaN(t) ? null : t
+const LIMIT_LABELS = { five_hour: '5-hour', seven_day: 'Weekly', spend_limit: 'Spend limit', seven_day_opus: 'Opus weekly', seven_day_sonnet: 'Sonnet weekly', seven_day_overage_included: 'Included overage', overage: 'Overage' }
+const FAMILY_LABELS = { haiku: 'Haiku', sonnet: 'Sonnet', opus: 'Opus', fable: 'Fable', mythos: 'Mythos' }
+const limitReset = (seconds, day = false) => {
+  if (!isNum(seconds)) return ''
+  const time = new Date(seconds * 1000)
+  return Number.isNaN(time.getTime()) ? '' : resetText(time.toISOString(), day)
+}
+export function noUsageLine(nextReset = null) {
+  const time = limitReset(nextReset)
+  return 'No Claude usage left' + (time ? ' until ' + time : '') + ' · IQ sent nothing'
+}
+export const NO_USAGE_FALLBACK = 'No Claude usage left. Nothing was counted.'
+export function billingLine(mode) {
+  return { api: 'Billing: API key (pay per token)', subscription: 'Billing: subscription (plan limits)',
+    extra_usage: 'Billing: usage credits or grace window (pay per token past the limit) · cache 5 min',
+    cloud_credits: 'Billing: cloud credits (pay per token) · cache 5 min', unknown: 'Billing: unknown' }[mode] || 'Billing: unknown'
 }
 
 
-
-export function viewResetMs(v) {
-  return typeof v === 'number' ? (Number.isFinite(v) ? v : null) : resetAtMs(v)
+export function limitPlanLines(facts, ended = []) {
+  if (!facts) return []
+  const lines = [billingLine(facts.billing_mode)]
+  if (facts.all_exhausted || facts.blocked) lines.push(noUsageLine(facts.next_reset))
+  if (facts.billing_mode !== 'api') {
+    const entries = []
+    for (const row of facts.rows || []) {
+      if (!LIMIT_LABELS[row.kind] || !isNum(row.percent_used)) continue
+      const reset = limitReset(row.resets_at, true)
+      entries.push({ kind: row.kind, text: LIMIT_LABELS[row.kind] + ': ' + percent(row.percent_used) + ' used · ' + (reset ? 'resets ' + reset : 'reset time unavailable') })
+    }
+    const finished = ended.filter((kind) => LIMIT_LABELS[kind] && !entries.some((e) => e.kind === kind))
+    for (const kind of finished) entries.push({ kind, text: LIMIT_LABELS[kind] + ': ' + WINDOW_RESET })
+    if (finished.length > 0) entries.sort((a, b) => Object.keys(LIMIT_LABELS).indexOf(a.kind) - Object.keys(LIMIT_LABELS).indexOf(b.kind))
+    for (const entry of entries) lines.push(entry.text)
+  }
+  for (const family of facts.exhausted_families || []) {
+    if (!FAMILY_LABELS[family]) continue
+    const row = (facts.rows || []).find((r) => r.kind === 'seven_day_' + family)
+    const reset = limitReset(row && row.resets_at, true)
+    lines.push(FAMILY_LABELS[family] + ': limit used up' + (reset ? ', resets ' + reset : ' · reset time unavailable'))
+  }
+  if ((facts.credit_billed_families || []).includes('fable')) lines.push('Fable bills to usage credits on your plan · est. savings on Fable turns use API prices')
+  return lines
 }
-
-
-
-
-
-export function windowFinished(resetMs, nowMs) {
-  return isNum(resetMs) && isNum(nowMs) && resetMs <= nowMs
+export function familyLimitLine(facts, chosenFamily, servingFamily) {
+  if (!facts || ['api', 'extra_usage', 'cloud_credits'].includes(facts.billing_mode)) return null
+  const family = (facts.exhausted_families || []).find((f) => f === chosenFamily) || (facts.exhausted_families || [])[0]
+  if (!FAMILY_LABELS[family]) return null
+  const row = (facts.rows || []).find((r) => r.kind === 'seven_day_' + family)
+  const time = limitReset(row && row.resets_at, true)
+  const available = FAMILY_LABELS[servingFamily] && !(facts.exhausted_families || []).includes(servingFamily) ?
+    servingFamily === chosenFamily ? ', IQ kept ' + FAMILY_LABELS[servingFamily] : ' · routing within ' + FAMILY_LABELS[servingFamily] :
+    ' · routing within available models'
+  return FAMILY_LABELS[family] + ' limit used up' + (time ? ' until ' + time : '') + available
 }
-
-
-export function resetLabel(label) {
-  return label + ' reset'
+export function creditSavingsLine(saved, pastLimit = true) {
+  const amount = isNum(saved) ? '$' + (Object.is(saved, -0) ? 0 : saved).toFixed(2) : null
+  return (pastLimit ? 'past your plan limit · ' : 'Fable bills to usage credits on your plan · ') +
+    (amount ? 'est. ' + amount + ' saved (API prices)' : 'est. savings unavailable')
+}
+export const LIMIT_SETTINGS_TEXT = Object.freeze({ auth: 'Host login: ', type: 'Plan type', tier: 'Plan tier', fable: 'Allow Fable', billing: 'Fable billing', missing: 'Claude Code has not reported plan limits yet', noFable: 'Fable is excluded from routing.' })
+export const PLAN_TYPE_CHOICES = Object.freeze([['auto', 'Auto'], ['api', 'API key (pay per token)'], ['subscription', 'Subscription (plan limits)']])
+export const PLAN_TIER_CHOICES = Object.freeze([['unknown', 'Unknown'], ['pro', 'Pro'], ['max', 'Max'], ['team_standard', 'Team standard'], ['team_premium', 'Team premium'], ['enterprise', 'Enterprise']])
+export const FABLE_BILLING_CHOICES = Object.freeze([['auto', 'Auto (from plan)'], ['plan_share', 'Plan share'], ['usage_credits', 'Usage credits']])
+export function authKindLine(kind) {
+  return LIMIT_SETTINGS_TEXT.auth + (kind === 'bearer' ? 'subscription' : kind === 'api-key' ? 'API key' : 'unknown')
+}
+export function receiptBillingTurn({ index, model, basis, estSavedUsd, estSavedWeeklyPct }) {
+  const family = typeof model === 'string' ? /^claude-(haiku|sonnet|opus|fable|mythos)-/.exec(model)?.[1] : null
+  const label = FAMILY_LABELS[family] || 'Unknown'
+  const saved = basis === 'plan' ? (isNum(estSavedWeeklyPct) ? 'est. ~' + estSavedWeeklyPct + '% plan limit saved' : 'plan % · calibrating') :
+    basis === 'dollars' ? (isNum(estSavedUsd) ? 'est. $' + estSavedUsd.toFixed(2) + ' saved (API prices)' : 'est. savings unavailable (API prices)') : 'billing basis unknown'
+  return '#' + count(index) + ' · ' + label + ' · ' + saved
+}
+export function receiptBillingTotals({ planCalls, creditCalls, estSavedPlanWeeklyPct, estSavedCreditUsd, promptsSkippedNoUsage }) {
+  return ['Plan calls: ' + count(planCalls), 'Credit calls: ' + count(creditCalls),
+    isNum(estSavedPlanWeeklyPct) ? 'est. ~' + estSavedPlanWeeklyPct + '% of your weekly limit saved' : 'Weekly limit saved: calibrating',
+    isNum(estSavedCreditUsd) ? 'est. $' + estSavedCreditUsd.toFixed(2) + ' saved on credit turns (API prices)' : 'Credit savings: est. unavailable',
+    'Prompts skipped with no usage: ' + count(promptsSkippedNoUsage)]
 }
 
 
@@ -132,15 +205,45 @@ export function stamp(ms) {
 
 
 
+export function measuredDollars(value) {
+  if (!isNum(value)) return 'n/a'
+  const rounded = Math.round(value * 100) / 100
+  return (rounded < 0 ? '-' : '') + '$' + Math.abs(rounded).toFixed(2)
+}
 
-export function sendLine(pred) { return null }
+
+export function measuredSpendLine(measured) {
+  if (!measured || typeof measured !== 'object' || !Object.prototype.hasOwnProperty.call(measured, 'paid_usd')) return null
+  const paid = measuredDollars(measured.paid_usd) + (isNum(measured.paid_usd) && measured.paid_complete === false ? '+' : '')
+  const hourly = measuredPace(measured)
+  const pace = hourly !== null ? SEP + '~' + measuredDollars(hourly) + '/hour' : ''
+  return 'this session: ' + paid + ' spent so far' + pace
+}
+
+
+export function sendLine(measured) {
+  return measuredSpendLine(measured)
+}
 
 
 export function answerLine(a) { return usd(a.usd) + SEP + plural(a.calls, 'call', 'calls') + ' (' + LABEL + ')' }
 
 
 
-export function workingBand(b) { return ['this prompt ' + usd(b.spend) + floorMark(b) + ' so far (' + SHORT_LABEL + ')' + SEP + plural(b.k, 'call', 'calls')] }
+export function workingBand(b) {
+  const prompt = b.promptMeasured
+  const paid = prompt ? measuredDollars(prompt.paid_usd) : usd(b.spend)
+  const floor = prompt ? isNum(prompt.paid_usd) && prompt.paid_complete === false ? '+' : '' : floorMark(b)
+  let first = 'this prompt ' + paid + floor + ' so far (' + SHORT_LABEL + ')'
+  const calls = plural(b.k, 'call', 'calls')
+  const width = isNum(b.columns) && b.columns > 20 ? b.columns - 3 : 100
+  
+  if (first.length > width) first = first.split(SEP)[0]
+  if (first.length > width) first = first.replace(' so far', '')
+  const all = [first, calls].join(SEP)
+  const session = measuredSpendLine(b.measured)
+  return [all.length <= width ? all : first, ...(session ? [session] : [])]
+}
 
 export function subagentShare(dollars, calls) {
   return isNum(calls) && calls > 0 ? ' (subagents ' + usd(dollars) + ', ' + plural(calls, 'call', 'calls') + ')' : ''
@@ -177,27 +280,33 @@ export function floorNotes(s) {
 
 
 
-
 export function sessionParts(s) {
   const out = { total: null, active: null, rate: null, limits: [] }
+  const measured = s.measured
+  const spent = measured ? measured.paid_usd : s.usd
+  const floor = measured ? measured.paid_complete === false : totalIsFloor(s)
+  const activeHours = measured ? measured.elapsed_ms / 3600000 : s.activeHours
+  const pace = measured ? measuredPace(measured) : isNum(activeHours) && activeHours >= 0.05 && isNum(spent) ? spent / activeHours : null
   if (s.calls > 0) {
-    out.total = 'session ' + usd(s.usd) + (totalIsFloor(s) ? '+' : '') + ' (' + SHORT_LABEL + ')'
-    if (isNum(s.activeHours) && s.activeHours >= 0.02) out.active = hours(s.activeHours) + ' active'
-    if (isNum(s.activeHours) && s.activeHours >= 0.05 && isNum(s.usd)) out.rate = usd(s.usd / s.activeHours) + (totalIsFloor(s) ? '+' : '') + '/h'
+    out.total = 'session ' + (measured ? measuredDollars(spent) : usd(spent)) + (floor ? '+' : '') + ' (' + SHORT_LABEL + ')'
+    if (isNum(activeHours) && activeHours >= 0.02) out.active = hours(activeHours) + ' active'
+    if (isNum(activeHours) && activeHours >= 0.05 && isNum(pace)) out.rate = usd(pace) + (floor ? '+' : '') + '/h'
   }
   const limits = Array.isArray(s.rateLimits) ? s.rateLimits : []
   const five = limits.find((l) => l && l.kind === 'five_hour')
   const week = limits.find((l) => l && l.kind === 'seven_day')
   const wide = isNum(s.columns) && s.columns >= 130
+  
+  
   if (five && isNum(five.percentUsed)) {
-    if (windowFinished(resetAtMs(five.resetsAt), s.nowMs)) out.limits.push(resetLabel('5-hour'))
+    if (windowReset(five.resetsAt, s.nowMs).passed) out.limits.push('5-hour ' + WINDOW_RESET)
     else {
       const r = wide ? resetText(five.resetsAt, false) : ''
       out.limits.push('5-hour ' + percent(five.percentUsed) + (r ? ' (resets ' + r + ')' : ''))
     }
   }
   if (week && isNum(week.percentUsed)) {
-    if (windowFinished(resetAtMs(week.resetsAt), s.nowMs)) out.limits.push(resetLabel('weekly'))
+    if (windowReset(week.resetsAt, s.nowMs).passed) out.limits.push('weekly ' + WINDOW_RESET)
     else {
       const r = resetText(week.resetsAt, true)
       out.limits.push('weekly ' + percent(week.percentUsed) + (r ? ' (resets ' + r + ')' : ''))

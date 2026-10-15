@@ -1,5 +1,6 @@
 
 import { modelClass } from './pricing.js'
+import { typedPromptText } from './trivial_turn.js'
 export const TIERS = ['simple', 'medium', 'complex']
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
@@ -31,14 +32,12 @@ export function sameModel(a, b) {
 
 
 
-
-const GUESS_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5']
-const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh']
+const GUESS_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']
+const SETTING_LEVELS = ['low', 'medium', 'high', 'xhigh'] 
 const SOURCES_HIGH_FIRST = ['policy', 'flag', 'local', 'project', 'user']
 
 export function guessEffort({ model, env, sources }) {
   const m = canonicalModel(model)
-  if (!GUESS_MODELS.includes(m)) return null
   const e = typeof env === 'string' ? env.trim().toLowerCase() : ''
   if (EFFORTS.includes(e)) return e
   for (const src of SOURCES_HIGH_FIRST) {
@@ -51,9 +50,93 @@ export function guessEffort({ model, env, sources }) {
         if (canonicalModel(key) === m && entry && typeof entry === 'object' && SETTING_LEVELS.includes(entry.effortLevel)) return entry.effortLevel
       }
     }
-    if (src !== 'user' && SETTING_LEVELS.includes(s.effortLevel)) return s.effortLevel
+    if (SETTING_LEVELS.includes(s.effortLevel)) return s.effortLevel
   }
-  return 'medium'
+  return GUESS_MODELS.includes(m) ? 'medium' : null
+}
+
+
+export function explicitEffort({ model, env, sources }) {
+  const m = canonicalModel(model)
+  const e = typeof env === 'string' ? env.trim().toLowerCase() : ''
+  if (EFFORTS.includes(e)) return e
+  for (const src of ['policy', 'flag']) {
+    const s = sources && sources[src]
+    if (!s || typeof s !== 'object') continue
+    for (const [key, entry] of Object.entries(s.modelSettings || {})) {
+      if (canonicalModel(key) === m && SETTING_LEVELS.includes(entry?.effortLevel)) return entry.effortLevel
+    }
+    if (SETTING_LEVELS.includes(s.effortLevel)) return s.effortLevel
+  }
+  return null
+}
+
+
+
+
+export function effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit = false, prompt } = {}) {
+  const configured = explicitEffort({ model, env, sources })
+  const runtime = EFFORTS.includes(runtimeEffort) || Number.isSafeInteger(runtimeEffort) && runtimeEffort >= 0 ? runtimeEffort : null
+  const ultrathink = /\bultrathink\b/i.test(typedPromptText(prompt))
+  const effortExplicit = configured !== null || runtimeExplicit === true && runtime !== null ||
+    ultrathink
+  const effort = (ultrathink ? 'max' : configured) ?? runtime ?? guessEffort({ model, env, sources })
+  return { effort, effortExplicit }
+}
+
+
+
+
+const NAMED_EFFORT_MODELS = new Set([
+  'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-sonnet-5-5',
+  'claude-haiku-5-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-opus-4-7',
+])
+const LIMITED_EFFORT_MODELS = new Set(['claude-opus-4-6', 'claude-sonnet-4-6'])
+export function supportsEffort(model, effort) {
+  const m = canonicalModel(model)
+  
+  if (Number.isSafeInteger(effort) && effort >= 0 && effort <= MAX_THINKING_BUDGET) return NAMED_EFFORT_MODELS.has(m) || LIMITED_EFFORT_MODELS.has(m)
+  if (!EFFORTS.includes(effort)) return false
+  return NAMED_EFFORT_MODELS.has(m) || LIMITED_EFFORT_MODELS.has(m) && effort !== 'xhigh'
+}
+
+export function defaultEffort(model) {
+  const m = canonicalModel(model)
+  if (GUESS_MODELS.includes(m)) return 'medium'
+  if (m === 'claude-opus-4-7') return 'xhigh'
+  return NAMED_EFFORT_MODELS.has(m) || LIMITED_EFFORT_MODELS.has(m) ? 'high' : null
+}
+
+
+export function supportedEffort(model, effort) {
+  if (Number.isSafeInteger(effort) && effort >= 0) {
+    const budget = Math.min(effort, MAX_THINKING_BUDGET)
+    return supportsEffort(model, budget) ? budget : null
+  }
+  const rank = effortRank(effort)
+  return rank === null ? null : [...EFFORTS].reverse().find(level => effortRank(level) <= rank && supportsEffort(model, level)) ?? null
+}
+
+export function effortRaise(from, to) {
+  const a = effortRank(from), b = effortRank(to)
+  return a !== null && b !== null && b > a ? 'raised from ' + from : ''
+}
+
+
+export function applicableChoice(choice, named, override = null) {
+  const own = override == null ? null : capEffort(override, named.effort)
+  if (own !== null && !supportsEffort(choice.model, own)) return { ...named }
+  const effort = own ?? (named.effortExplicit === true ? capEffort(choice.effort, named.effort) : choice.effort)
+  return { model: choice.model, effort: supportedEffort(choice.model, effort) }
+}
+
+
+export function applyChoice(input, choice) {
+  if (choice.model === input.model && choice.effort === input.effort) return input
+  const out = { ...input, model: choice.model }
+  if (supportsEffort(choice.model, choice.effort)) out.effort = choice.effort
+  else delete out.effort
+  return out.model === input.model && out.effort === input.effort ? input : out
 }
 
 
@@ -105,8 +188,8 @@ export function capEffort(effort, named) {
   const level = effortRank(named) === null ? 'medium' : named
   const budget = Number.isSafeInteger(named) && named >= 0 ? Math.min(named, MAX_THINKING_BUDGET) : null
   if (Number.isSafeInteger(effort) && effort >= 0) {
-
-
+    
+    
     if (effortRank(named) !== null) return named
     return Math.min(effort, budget ?? UNKNOWN_THINKING_BUDGET, MAX_THINKING_BUDGET)
   }
@@ -121,10 +204,13 @@ export function capEffort(effort, named) {
 export function validateAnswer(block, named) {
   if (!block || block.v !== 2 || typeof block.model !== 'string' || typeof block.stay !== 'boolean' ||
       typeof block.reason_code !== 'string' || !/^[a-z_]{1,48}$/.test(block.reason_code) ||
-      !(block.effort === null || EFFORTS.includes(block.effort) || Number.isSafeInteger(block.effort) && block.effort >= 0)) return { ok: false, why: 'malformed' }
+      !(block.effort === undefined || block.effort === null || EFFORTS.includes(block.effort) || Number.isSafeInteger(block.effort) && block.effort >= 0)) return { ok: false, why: 'malformed' }
   if (!/^claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:-\d{1,2})?$/.test(canonicalModel(block.model))) return { ok: false, why: 'malformed_model' }
   const nr = rankOf(named.model)
   const mr = rankOf(block.model)
   if (nr === null || mr === null || mr > nr) return { ok: false, why: 'model_above_named' }
-  return { ok: true, model: sameModel(block.model, named.model) ? named.model : canonicalModel(block.model), effort: capEffort(block.effort, named.effort), stay: block.stay, reason: block.reason_code }
+  const model = sameModel(block.model, named.model) ? named.model : canonicalModel(block.model)
+  const effort = named.effortExplicit === true ? capEffort(block.effort, named.effort) : block.effort
+  return { ok: true, model, effort: supportedEffort(model, effort), stay: block.stay, reason: block.reason_code,
+    ...(typeof block.cache_advantage_usd === 'number' && Number.isFinite(block.cache_advantage_usd) && block.cache_advantage_usd >= 0 ? { cacheAdvantageUsd: block.cache_advantage_usd } : {}) }
 }

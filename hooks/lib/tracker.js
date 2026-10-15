@@ -1,3 +1,5 @@
+import { newMeasuredLedger, addMeasured, measuredSnapshot } from './measured_cost.js'
+
 
 
 
@@ -36,37 +38,39 @@ export const isHumanKind = (kind) => HUMAN_KINDS.has(kind)
 
 export function newTracker() {
   return {
-
-    usd: 0,
-    ownUsd: 0,
+    
+    usd: 0, 
+    measured: newMeasuredLedger(),
+    measuredStartMs: null,
+    ownUsd: 0, 
     calls: 0,
     mainCalls: 0,
     helperCalls: 0,
     helperUsd: 0,
-    unpriced: 0,
-    ownUnpriced: 0,
-    advisorUnpriced: 0,
+    unpriced: 0, 
+    ownUnpriced: 0, 
+    advisorUnpriced: 0, 
     activeMs: 0,
     lastCallMs: null,
-    humanPrompts: 0,
-    boot: null,
-
+    humanPrompts: 0, 
+    boot: null, 
+    
     lastMainEndMs: null,
     lastMainCtx: null,
     lastMainModel: null,
     lastMainModelClass: null,
     lastMainEffortClass: null,
-    historyKnown: false,
-    resumed: false,
-
+    historyKnown: false, 
+    resumed: false, 
+    
     helpers: new Map(),
-    subagentTotals: new Map(),
+    subagentTotals: new Map(), 
     omittedSubagents: false,
-
+    
     segCount: 0,
     cur: null,
     recent: [],
-    pending: null,
+    pending: null, 
     inflight: new Map(),
     turnOpen: false,
   }
@@ -79,16 +83,17 @@ function newSegment(idx, nowMs, human) {
     startMs: nowMs,
     k: 0,
     usd: 0,
-    ownUsd: 0,
+    measured: newMeasuredLedger(),
+    ownUsd: 0, 
     unpriced: 0,
     advisorUnpriced: 0,
     mainCalls: 0,
     helperCalls: 0,
     helperUsd: 0,
-    lastEstimate: null,
+    lastEstimate: null, 
     completed: false,
     usageIncomplete: false,
-    ctx: null,
+    ctx: null, 
     mainModel: null,
     mainModelClass: null,
     mainEffortClass: null,
@@ -99,7 +104,7 @@ function newSegment(idx, nowMs, human) {
     ctx0: null,
     cold0: undefined,
     state0: null,
-    pend: null,
+    pend: null, 
     turns: 0,
     turnsDone: 0,
     helpersMax: 0,
@@ -121,7 +126,7 @@ export function aliveHelpers(T, nowMs) {
 export function coldFlag(T, nowMs) {
   if (T.lastMainEndMs !== null) return nowMs - T.lastMainEndMs > COLD_GAP_MS
   if (T.historyKnown) return undefined
-  return true
+  return true 
 }
 
 
@@ -219,7 +224,7 @@ function pruneHelpers(T, nowMs) {
 
 export function onStepStart(T, a) {
   T.inflight.set(a.key, { agentId: a.agentId || null, ms: a.nowMs })
-  if (T.inflight.size > MAX_INFLIGHT) T.inflight.delete(T.inflight.keys().next().value)
+  if (T.inflight.size > MAX_INFLIGHT) T.inflight.delete(T.inflight.keys().next().value) 
   if (a.agentId) {
     let h = T.helpers.get(a.agentId)
     if (!h) {
@@ -238,7 +243,7 @@ export function onStepStart(T, a) {
   const seg = T.cur
   T.turnOpen = true
   seg.completed = false
-
+  
   if (a.model) {
     seg.mainModel = a.model
     seg.mainModelClass = a.modelClass || seg.mainModelClass
@@ -269,14 +274,19 @@ export function onStepEnd(T, a) {
     seg = (h && h.homeSeg) || T.cur
   } else seg = T.cur
   if (seg === null) seg = startSegment(T, a.nowMs, null)
+  if (a.measured) {
+    addMeasured(T.measured, a.measured)
+    addMeasured(seg.measured, a.measured)
+    if (T.measuredStartMs === null) T.measuredStartMs = a.nowMs
+  }
   seg.k += 1
   if (a.usageComplete === false) seg.usageIncomplete = true
-
-
+  
+  
   const dollars = Number.isFinite(a.price.usd) ? a.price.usd : 0
-  const own = Number.isFinite(a.price.own) ? a.price.own : dollars
+  const own = Number.isFinite(a.price.own) ? a.price.own : dollars 
   const partial = !a.price.priced || a.price.partial === true
-  const advisor = Number.isInteger(a.price.advisor) && a.price.advisor > 0 ? a.price.advisor : 0
+  const advisor = Number.isInteger(a.price.advisor) && a.price.advisor > 0 ? a.price.advisor : 0 
   seg.usd += dollars
   seg.ownUsd += own
   seg.advisorUnpriced += advisor
@@ -315,7 +325,7 @@ export function onStepEnd(T, a) {
     if (a.effort !== undefined && a.effort !== null) T.lastMainEffortClass = a.effortClass || 'unknown'
     T.mainCalls += 1
   }
-
+  
   T.calls += 1
   T.usd += dollars
   T.ownUsd += own
@@ -357,17 +367,20 @@ export function onTurnComplete(T, a) {
 
 
 export function sessionMeter(meter, T) {
-  const row = (s) => ({ idx: s.idx, at_ms: s.startMs, usd: s.usd, calls: s.k,
+  const row = (s) => ({ idx: s.idx, at_ms: s.startMs, usd: s.measured.calls > 0 ? s.measured.paid_usd : s.usd, calls: s.k,
     helper_usd: s.helperUsd, helper_calls: s.helperCalls, unpriced: s.unpriced, advisorUnpriced: s.advisorUnpriced,
     completed: s.completed, estimate: s.lastEstimate ? { ...s.lastEstimate } : null })
   const prompts = (T.cur ? T.recent.concat([T.cur]) : T.recent).filter((s) => s.human).slice(-PROMPT_HISTORY_CAP).reverse().map(row)
   const last = !T.turnOpen && !T.pending && T.cur && T.cur.human && T.cur.completed ? row(T.cur) : null
-  return { ...meter, prompt: meter.prompt ? { ...meter.prompt, helper_usd: T.cur ? T.cur.helperUsd : 0,
+  return { ...meter, prompt: meter.prompt ? { ...meter.prompt, measured: T.cur ? measuredSnapshot(T.cur.measured) : null,
+    spend_usd: T.cur?.measured.calls > 0 ? T.cur.measured.paid_usd : meter.prompt.spend_usd, helper_usd: T.cur ? T.cur.helperUsd : 0,
     helper_calls: T.cur ? T.cur.helperCalls : 0, unpriced: T.cur ? T.cur.unpriced : 0, advisorUnpriced: T.cur ? T.cur.advisorUnpriced : 0 } : null,
-
-
-
-    session: { ...meter.session, prompts, last_prompt: last, unpriced: T.unpriced, advisorUnpriced: T.advisorUnpriced, resumed: T.resumed === true && !T.boot,
+    
+    
+    
+    session: { ...meter.session, usd: T.measured.calls > 0 ? T.measured.paid_usd : meter.session?.usd, prompts, last_prompt: last, measured: T.measured.calls > 0 ? { ...measuredSnapshot(T.measured), started_at_ms: T.measuredStartMs, elapsed_ms: T.activeMs, paid_complete: T.measured.paid_complete && !(T.resumed && !T.boot),
+      rows: (T.cur ? T.recent.concat([T.cur]) : T.recent).filter((s) => s.measured.calls > 0).slice(-PROMPT_HISTORY_CAP).reverse()
+        .map((s) => ({ idx: s.idx, at_ms: s.startMs, completed: s.completed, ...measuredSnapshot(s.measured) })) } : null, unpriced: T.unpriced, advisorUnpriced: T.advisorUnpriced, resumed: T.resumed === true && !T.boot,
       subagents: [...T.subagentTotals.values()].map((s) => ({ ...s })), omitted_subagents: T.omittedSubagents } }
 }
 
@@ -382,6 +395,9 @@ export function applyBootstrap(T, boot) {
   if (!boot || T.boot) return false
   T.boot = boot
   T.historyKnown = true
+  addMeasured(T.measured, { paid_usd: Number(boot.usd) || 0, baseline_usd: null, saved_usd: null, rebuild_debit_usd: null,
+    model: 'mixed', effort: null, named_model: null, named_effort: null, usage: {}, complete: false,
+    paid_complete: !(Number(boot.unpriced) > 0), missing: ['historical_baseline'], skipped: true })
   T.usd += Number(boot.usd) || 0
   T.ownUsd += Number(boot.usd) || 0
   T.calls += Number(boot.calls) || 0

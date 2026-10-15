@@ -1,22 +1,22 @@
-# IQ Code 1.0.1
+# IQ Code 1.1.0
 
-IQ Code is a Claude Code plugin from IQ Routing. Keep your session cost, prompt cache countdown, and plan pace in view. See the model and thinking level on each answer. Open `/iq` for Home, Routing, Cost, Plan, and Settings.
+IQ Code is a Claude Code plugin from IQ Routing. With routing on, the band shows one line: `IQ · Sonnet 5.5 · high`. It shows your current model and thinking level, omitting the thinking level when there is none. Routing off hides the band; paused routing shows `IQ · paused (/iq)`. Open `/iq` for Home, Routing, Cost, Plan, and Settings.
 
 Dollar figures are **API-equivalent**: what the same usage would cost at API prices, rather than your subscription bill. Savings are labelled **est.** Estimates can be off and are never a promise.
 
 ## What you can do
 
-- Follow measured session cost while you work. A `+` after a dollar figure (`$12.40+`) means it is at least that: it leaves out calls IQ Code cannot price, including the advisor's, and, in the session total, anything a resumed session held before IQ Code started.
-- Check the prompt cache countdown and your 5-hour and weekly plan pace.
-- See which model and thinking level served an answer.
+- Follow measured prompt and session cost in `/iq`. A `+` after a dollar figure (`$12.40+`) means it is at least that: it leaves out calls IQ Code cannot price, including the advisor's, and, in the session total, anything a resumed session held before IQ Code started.
+- Check the prompt cache countdown and your 5-hour and weekly plan pace in `/iq`.
+- See the model and thinking level in the band. Open `/iq` for the last decision, rating and reason, this prompt's cost and calls, session cost and pace, plan percentages, monthly decision count, and Saved.
 - Use the waving iQ flag, or switch animation off in Settings.
-- Turn routing on for a session with your IQ key and Personal plan or higher. IQ can choose a cheaper model or thinking level, never above the model you chose. Your tokens still go straight to Anthropic on your own plan.
+- Turn routing on for a session with your IQ key and Personal plan or higher. IQ can choose a cheaper model and picks thinking from low to max. Settings give it a starting effort; an explicit `/effort` or ultrathink still decides. IQ never raises your model. Your tokens still go straight to Anthropic on your own plan.
 
-Routing starts off in each session. If IQ is unavailable, you can keep working with your chosen model. Measured usage remains available when a cost estimate is unavailable.
+Routing starts off in each session. If IQ is unavailable, you can keep working with your chosen model. Measured usage remains available in `/iq` when a cost estimate is unavailable. Normal turns add nothing to the chat. When IQ pauses, refuses your key or cannot answer, you see one short line.
 
 ## The IQ look
 
-IQ Code ships two themes: pick **IQ Light** or **IQ Dark** in `/theme`. In those two, the IQ labels (the routed and kept tags in the band, the IQ text mark and the headings in `/iq`) are IQ blue. Other themes show them in their own accent colour, and the warning colour always comes from the theme.
+IQ Code ships two themes: pick **IQ Light** or **IQ Dark** in `/theme`. In those two, the band, the IQ text mark and the headings in `/iq` are IQ blue. Other themes show them in their own accent colour, and the warning colour always comes from the theme.
 
 A plugin cannot paint your terminal's background, so the background comes from your terminal profile. Optional profiles for Terminal.app, iTerm2 and Ghostty are in `extras/terminal/`, and its README says how to import each one. Nothing is installed for you.
 
@@ -90,7 +90,7 @@ To uninstall, see [Uninstall](#uninstall).
 | `/iq-budget off` | Clear the budget. |
 | `/iq-budget status` | Check the budget. |
 
-`/iq-budget <amount> usd` sets a limit in API-equivalent dollars for your measured spend. When spend reaches the limit, the band shows over budget. Nothing else changes: the session continues, and the budget does not change the model. The limit stays until `/iq-budget off`, or until you start a new session.
+`/iq-budget <amount> usd` sets a limit in API-equivalent dollars for your measured spend. When spend nears or reaches the limit, you see one short line and `/iq` shows the budget's status. Nothing else changes: the session continues, and the budget does not change the model. The limit stays until `/iq-budget off`, or until you start a new session.
 
 ## Settings
 
@@ -103,11 +103,9 @@ With an IQ key, IQ Code reads your dashboard's session defaults at startup and a
 The cost meter, cache clock, plan pace, budgets, and themes are free.
 
 - **Free:** IQ Code's cost meter, cache clock, plan pace, budgets, and themes, plus gateway routing for API traffic with an IQ API key. IQ Code routing needs Personal or higher.
-- **Personal:** **$6/month**, with **2,000 routing decisions a month** for IQ Code. Personal adds rough session cost estimates in the band and `/iq` Cost. Estimates appear for Opus- and Sonnet-led sessions without subagents or compaction, after the first call, up to 64 calls. Measured cost is always shown. Paying Team and Enterprise plans also include these estimates.
+- **Personal:** **$6/month**, with **2,000 routing decisions a month** for IQ Code. `/iq` Home and Cost show measured session cost and pace on every plan. Paying Team and Enterprise plans also include IQ Code routing.
 
 A routing decision is one request to IQ, made for each new prompt you send while routing is on and for each subagent task Claude starts in that session (not forks, workflow agents or teammates). A message sent while Claude is still working makes no new request. Subagent-heavy sessions use decisions faster.
-
-Session estimates use a model fit in part on [TraceLab v0.0.2](https://github.com/uw-syfi/TraceLab/releases/tag/v0.0.2) ([SyFI Lab, University of Washington](https://tracelab.cs.washington.edu)), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), adapted; no endorsement implied.
 
 Get Personal from your IQ dashboard at https://iq-routing.com/billing.
 
@@ -120,7 +118,7 @@ Create an IQ key on the API Keys page of your IQ dashboard, at https://iq-routin
 /reload-plugins
 ```
 
-Enter your key in the masked **IQ API key** field. The key is optional; the display features work without it. Key changes apply after `/reload-plugins` or a restart. Then use `/iq-route on` to enable routing for a session with Personal or higher. Without a usable key, `/iq-route on` leaves routing off and tells you how to add one. A key identified as Free leaves routing off and shows: “Routing needs the Personal plan ($6/month). Nothing was sent to IQ for routing. iq-routing.com/billing”. With routing on, your typed prompts and the scrubbed brief of each subagent task go to IQ. See [Privacy](#privacy).
+Enter your key in the masked **IQ API key** field. The key is optional; the display features work without it. Key changes apply after `/reload-plugins` or a restart. Then use `/iq-route on` to enable routing for a session with Personal or higher. Without a usable key, `/iq-route on` leaves routing off and tells you how to add one. A key identified as Free leaves routing off and shows: “Routing needs the Personal plan ($6/month). Nothing was sent to IQ for routing. iq-routing.com/billing”. With routing on, the prompt as submitted, including pasted text, and recent submitted prompts go to IQ after a best-effort scrub and removal of known host context. The scrubbed brief of each subagent task is sent too. See [Privacy](#privacy).
 
 Claude Code stores the key in the macOS Keychain, falling back to `~/.claude/.credentials.json` if the Keychain rejects the write. Linux and Windows use `~/.claude/.credentials.json` (`%USERPROFILE%\.claude\.credentials.json` on Windows). `CLAUDE_CONFIG_DIR` changes the credentials file location. Uninstalling the plugin from its last install scope removes the key Claude Code stores for it. `--keep-data` keeps the plugin's data folder.
 
@@ -132,13 +130,13 @@ A legacy local plugin named `iq` in `CLAUDE_CODE_PLUGIN_DIRS` loads alongside `i
 
 ## Privacy
 
-With a usable IQ key, IQ Code reads session defaults from IQ through the body-free `GET /v1/claude-code/settings` at startup and at most once every ten minutes, even with routing off; this GET sends no prompt content. Routing and cost estimate requests remain off until routing is on. Without a usable IQ key, it sends nothing to IQ. Before arming routing, it checks your plan with the usage-only `GET /v1/claude-code/usage` request. That request contains no prompt or task brief. If the response identifies the key as Free, routing stays off for the session and no prompt or task brief is sent for routing. If the usage check fails or is unavailable, routing can turn on; a plan-required response to a routing request then pauses it. Requests use the sensitive plugin setting first, then the legacy key file at `~/.claude/iq/key`, with `IQ_ROUTER_KEY` accepted only from user-level Claude Code settings.
+With a usable IQ key, IQ Code reads session defaults from IQ through the body-free `GET /v1/claude-code/settings` at startup and at most once every ten minutes, even with routing off; this GET sends no prompt content. Routing requests remain off until routing is on. Without a usable IQ key, it sends nothing to IQ. Before arming routing, it checks your plan with the usage-only `GET /v1/claude-code/usage` request. That request contains no prompt or task brief. If the response identifies the key as Free, routing stays off for the session and no prompt or task brief is sent for routing. If the usage check fails or is unavailable, routing can turn on; a plan-required response to a routing request then pauses it. Requests use the sensitive plugin setting first, then the legacy key file at `~/.claude/iq/key`, with `IQ_ROUTER_KEY` accepted only from user-level Claude Code settings.
 
-With routing on, requests go to `https://gateway.iq-routing.com/v1`. Routing sends your typed prompt and filtered recent typed prompts from this session (up to about 8,000 tokens), model, thinking-level and agent-type labels, and conversation size and cache timing facts. With routing on, the scrubbed subagent brief (at most 16,000 characters) is sent to IQ. Subagent tasks are rated while routing is on; `/iq-route subagents off` stops that for the session. Secret filtering is best-effort and can miss secrets; avoid putting secrets in prompts or subagent tasks. IQ Code does not directly read answers, files, or tool output into these requests. The subagent brief is model-written and can quote files or tool output. To rate a prompt, IQ may send a short excerpt to OpenAI: recent messages cut short plus your latest prompt, about 5,200 characters at most, or for a subagent the task description, up to about 2,000 characters. Some requests skip this step, IQ does not store the excerpt, and OpenAI handles it under its API terms. Your model tokens still go straight to Anthropic on your plan.
+With routing on, requests go to `https://gateway.iq-routing.com/v1`. Routing sends the prompt as submitted, including pasted text, after a best-effort scrub and removal of known host context. Recent submitted prompts from this session share a limit of about 8,000 tokens with the current prompt; a long prompt is cut in the middle. Requests also include model, thinking-level and agent-type labels, and conversation size and cache timing facts. Pasted files, logs, and tool output can be included in the submitted text. The model-written subagent brief can also quote files or tool output. With routing on, the scrubbed subagent brief (at most 16,000 characters) is sent to IQ. Subagent tasks are rated while routing is on; `/iq-route subagents off` stops that for the session. Secret filtering is best-effort and can miss secrets; avoid putting secrets in prompts or subagent tasks. To rate a prompt, IQ may send a short excerpt to OpenAI: recent messages cut short plus your latest prompt, about 5,200 characters at most, or for a subagent the task description, up to about 2,000 characters. Some requests skip this step, IQ does not store the excerpt, and OpenAI handles it under its API terms. Your model tokens still go straight to Anthropic on your plan.
 
-Rough session cost estimates can be requested after the first completed main-thread call while routing is on, then at most once per 30 seconds and at least four new calls apart. They send usage numbers (conversation and cache-read tokens), model and thinking-level labels, call, helper and compaction counts, spend, active time, lifecycle and usage-status labels, a random session number and a request sequence number. These requests contain no prompt, answer, file, or tool text.
+Session cost and pace are measured locally from reported usage. IQ Code does not request server forecasts for these measured sessions. Pace appears after three minutes of active time; a partial spend total carries a `+` when a call could not be fully priced.
 
-Use `/iq-route off` to stop routing and cost estimate requests. To stop every IQ request, including session defaults, set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (any value, even empty or `0`), set `IQ_ROUTER_DISABLED=1`, or create `~/.claude/iq/router/OFF`. A failed kill-switch read blocks requests. The destination is fixed; a user-level `IQ_ROUTER_DEV_LOCALHOST=1` setting allows a localhost development destination only.
+Use `/iq-route off` to stop routing requests. To stop every IQ request, including session defaults, set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (any value, even empty or `0`), set `IQ_ROUTER_DISABLED=1`, or create `~/.claude/iq/router/OFF`. A failed kill-switch read blocks requests. The destination is fixed; a user-level `IQ_ROUTER_DEV_LOCALHOST=1` setting allows a localhost development destination only.
 
 The key remains in Claude Code’s secure storage, or in your legacy key file or user setting. It is never copied into IQ Code’s stored state, logs, UI, or errors. IQ Code writes settings, onboarding state, capped error logs, routing decision metadata, and the size each session's prompt cache started at under `~/.claude/iq/`. Prompt history stays in memory and is cleared on `/clear` and in-process resume. IQ Code does not deliberately write prompts, answers, or tool text to disk; error text is scrubbed on a best-effort basis. Decision logs contain usage and validated model/effort labels, not the raw model string returned by IQ.
 

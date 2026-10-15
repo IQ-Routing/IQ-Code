@@ -53,7 +53,7 @@ function ownPasses(usage, model) {
     if (!e || typeof e !== 'object' || !isStr(e.type)) continue
     if (e.type === 'fallback_message') own.push(e)
     else if (e.type === 'message' && (!isStr(e.model) || sameId(e.model, ran))) own.push(e)
-    else other.push(e)
+    else other.push(e) 
   }
   return { ran, own, other }
 }
@@ -61,6 +61,21 @@ function ownPasses(usage, model) {
 
 export function extraPasses(usage, model) {
   return ownPasses(usage, model).other.map((e) => ({ type: e.type, model: isStr(e.model) ? e.model : null, usage: e }))
+}
+
+
+
+
+
+export function latestCacheWriteTtlMs(usage, model) {
+  const passes = Array.isArray(usage?.iterations) ? ownPasses(usage, model).own : [usage]
+  let ttl = null
+  for (const pass of passes) {
+    const split = pass?.cache_creation
+    if (num(split?.ephemeral_1h_input_tokens) > 0) return 3_600_000
+    if (num(split?.ephemeral_5m_input_tokens) > 0) ttl = 300_000
+  }
+  return ttl
 }
 
 
@@ -129,7 +144,7 @@ export function modelClass(model) {
     }
     return 'gpt-other'
   }
-
+  
   for (const k of families) if (m === k || m.startsWith(k + '-')) return 'claude-' + k
   return 'other'
 }
@@ -155,7 +170,7 @@ export function makePricer(card) {
   const keys = Object.keys(rows).filter((k) => rows[k] && rows[k].priced !== false)
   const resolved = new Map()
 
-
+  
   function resolve(model) {
     if (typeof model !== 'string' || model === '') return null
     if (resolved.has(model)) return resolved.get(model)
@@ -175,7 +190,7 @@ export function makePricer(card) {
     return found
   }
 
-
+  
   function ratesFor(row, contextTokens) {
     const rIn = row.input
     const rOut = row.output
@@ -197,9 +212,9 @@ export function makePricer(card) {
     return { input: rIn, output: rOut, read: rCr, w5: rW5, w1: rW1, isTier: false }
   }
 
-
-
-
+  
+  
+  
   function priceCounters(row, usage, isMain, passes = 1) {
     const inp = num(usage && usage.input_tokens)
     const out = num(usage && usage.output_tokens)
@@ -210,7 +225,7 @@ export function makePricer(card) {
     const cw5 = named ? num(split.ephemeral_5m_input_tokens) : 0
     const cw1 = named ? num(split.ephemeral_1h_input_tokens) : 0
     const unsplit = Math.max(cw - cw5 - cw1, 0)
-
+    
     const w5tokens = cw5 + (named || !isMain ? unsplit : 0)
     const w1tokens = cw1 + (!named && isMain ? unsplit : 0)
     const context = inp + cr + cw
@@ -227,17 +242,17 @@ export function makePricer(card) {
     return { usd: parts.input + parts.read + parts.write5 + parts.write1h + parts.output, priced: true, parts, tokens, context }
   }
 
-
-
-
-
-
-
-
-
-
-
-
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   function price(model, usage, opts) {
     const isMain = !!(opts && opts.main)
     const hit = resolve(model)

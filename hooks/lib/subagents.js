@@ -1,5 +1,6 @@
 
-import { canonicalModel, sameModel, displayModel, familyOf, validateAnswer, capEffort } from './models.js'
+
+import { canonicalModel, sameModel, displayModel, familyOf, validateAnswer, capEffort, supportedEffort, applicableChoice } from './models.js'
 const ALIASES = { haiku: 'claude-haiku-4-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' }
 const HAIKU55 = 'claude-haiku-5-5'
 const HAIKU45 = 'claude-haiku-4-5'
@@ -32,7 +33,7 @@ export const SUB_TEXT = {
   routed: (type, to) => 'iq-route: subagent' + (type ? ' ' + type : '') + ' on ' + to + ' (IQ decision)',
   usageSub: 'iq-route: use subagents on or subagents off.',
   subOff: 'iq-route: subagent routing is off.',
-
+  
   pubOn: 'iq-route: subagent routing is on until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. While routing is on, IQ rates each subagent task: its task brief (best-effort secret scrubbing, up to 16,000 characters) is sent to IQ and counts as one IQ decision. A task IQ cannot rate keeps its model. /iq-route subagents off stops it now.',
   pubOff: 'iq-route: subagent routing is off until /clear, a resume or /reload-plugins. The switch is on by default; your choice is never saved. No subagent task brief is sent to IQ, and each subagent keeps the model Claude Code gives it. /iq-route subagents on turns it back on now.',
   pubStatusOn: 'iq-route: subagent routing is on (subagent tasks are rated while routing is on). /iq-route subagents off stops it for this session.',
@@ -68,33 +69,34 @@ export function planSubagent(a) {
   const answer = validateAnswer(a.answer, base)
   if (answer.ok) {
     if (!answer.stay) {
-      choice = { model: answer.model, effort: answer.effort }
+      choice = applicableChoice({ model: answer.model, effort: answer.effort }, base, a.explicitEffort ?? null)
       fromIq = true
     }
     reason = answer.reason
   }
-  return { model: choice.model, effort: choice.effort, action: sameModel(choice.model, base.model) ? 'keep' : 'down', reason, fromIq }
+  return { model: choice.model, effort: choice.effort, action: sameModel(choice.model, base.model) ? 'keep' : 'down', reason, fromIq,
+    explicitEffort: a.explicitEffort ?? null }
 }
 
 
 export function effortFor(plan, engineEffort) {
   if (!plan || plan.fromIq !== true) return undefined
-  const effort = capEffort(plan.effort, engineEffort)
-  return effort !== null && effort !== undefined && effort !== engineEffort ? effort : undefined
+  const effort = supportedEffort(plan.model, plan.explicitEffort != null ? capEffort(plan.effort, engineEffort) : plan.effort)
+  return effort !== null && effort !== engineEffort ? effort : undefined
 }
 
 export function gateSpawn(g, spawn) {
   if (g.on !== true) return 'off'
-  if (g.interactive !== true) return 'headless'
-
-
+  if (g.interactive !== true) return 'headless' 
+  
+  
   let mainOn = g.mainOn === true
   if (!mainOn) return 'main_off'
   if (g.killed) return 'killed'
   if (!g.hasKey) return 'no_key'
   if (g.errorsOff || g.stopped) return 'paused_errors'
-  if (spawn.fork === true) return 'fork'
-  if (spawn.workflow) return 'workflow'
+  if (spawn.fork === true) return 'fork' 
+  if (spawn.workflow) return 'workflow' 
   if (spawn.isTeammate === true) return 'teammate'
   return null
 }
