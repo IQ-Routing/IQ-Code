@@ -33,7 +33,7 @@ function modeOf(view) {
 }
 
 
-export const PRODUCT_VERSION = '1.1.0'
+export const PRODUCT_VERSION = '1.1.1'
 
 
 export const WORDS = {
@@ -326,6 +326,7 @@ const REASON = {
   error: 'no answer, kept your model',
   backoff: 'backing off, kept your model',
   paused: 'routing paused',
+  paused_auth: 'routing paused after an account check',
 }
 
 const SUBAGENT_REASON = {
@@ -333,6 +334,7 @@ const SUBAGENT_REASON = {
   headless: 'no interactive session', killed: 'routing disabled', no_key: 'IQ key unavailable',
   fork: 'fork keeps the parent model', teammate: 'teammate keeps its model',
   workflow_remote: 'remote Workflow agent', workflow_brief_hidden: 'Workflow brief hidden', workflow_brief_unavailable: 'Workflow brief unavailable',
+  paused_auth: 'routing paused after an account check',
   paused_errors: 'routing paused after errors', paused_rate_limited: 'waiting before retrying IQ', rate_limited: 'waiting before retrying IQ',
   paused_plan: 'IQ plan required', plan_required: 'IQ plan required', paused_allowance: 'IQ allowance reached', allowance: 'IQ allowance reached',
   free_quota: 'IQ allowance reached', free_daily: 'daily IQ allowance reached', auth_required: 'IQ sign-in required',

@@ -16,7 +16,8 @@ export function canonicalModel(id) {
   if (br >= 0) m = m.slice(0, br)
   const slash = m.lastIndexOf('/')
   if (slash >= 0) m = m.slice(slash + 1)
-  return m.replace(/-20\d{6}$/, '')
+  return m.replace(/^(?:(?:us|eu|apac|global)\.)?anthropic\./, '').replace(/@20\d{6}$/, '')
+    .replace(/-v\d+(?::\d+)?$/, '').replace(/-20\d{6}$/, '')
 }
 
 export function sameModel(a, b) {
@@ -96,13 +97,14 @@ export function explicitModel({ env, sources, runtimeModel, startupModel, resolv
 
 
 
-export function effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit = false, prompt } = {}) {
+export function effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit = false, observedEffort, prompt } = {}) {
   const configured = explicitEffort({ model, env, sources })
   const runtime = EFFORTS.includes(runtimeEffort) || Number.isSafeInteger(runtimeEffort) && runtimeEffort >= 0 ? runtimeEffort : null
   const ultrathink = /\bultrathink\b/i.test(typedPromptText(prompt))
   const effortExplicit = configured !== null || runtimeExplicit === true && runtime !== null ||
     ultrathink
-  const effort = (ultrathink ? 'max' : configured) ?? runtime ?? guessEffort({ model, env, sources })
+  const observed = EFFORTS.includes(observedEffort) || Number.isSafeInteger(observedEffort) && observedEffort >= 0 ? observedEffort : null
+  const effort = (ultrathink ? 'max' : configured) ?? (runtimeExplicit ? runtime : null) ?? observed ?? runtime ?? guessEffort({ model, env, sources })
   return { effort, effortExplicit }
 }
 
@@ -230,6 +232,7 @@ export function capEffort(effort, named) {
 
 export function validateAnswer(block, named) {
   if (!block || block.v !== 2 || typeof block.model !== 'string' || typeof block.stay !== 'boolean' ||
+      !(block.keep === undefined || typeof block.keep === 'boolean') ||
       typeof block.reason_code !== 'string' || !/^[a-z_]{1,48}$/.test(block.reason_code) ||
       !(block.effort === undefined || block.effort === null || EFFORTS.includes(block.effort) || Number.isSafeInteger(block.effort) && block.effort >= 0)) return { ok: false, why: 'malformed' }
   if (!/^claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:-\d{1,2})?$/.test(canonicalModel(block.model))) return { ok: false, why: 'malformed_model' }
@@ -241,5 +244,6 @@ export function validateAnswer(block, named) {
   const model = sameModel(block.model, named.model) ? named.model : canonicalModel(block.model)
   const effort = named.effortExplicit === true ? capEffort(block.effort, named.effort) : block.effort
   return { ok: true, model, effort: supportedEffort(model, effort), stay: block.stay, reason: block.reason_code,
+    ...(typeof block.keep === 'boolean' ? { keep: block.keep } : {}),
     ...(typeof block.cache_advantage_usd === 'number' && Number.isFinite(block.cache_advantage_usd) && block.cache_advantage_usd >= 0 ? { cacheAdvantageUsd: block.cache_advantage_usd } : {}) }
 }

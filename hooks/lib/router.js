@@ -1,8 +1,8 @@
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
 
 import { dayOf, isoOf, sha256Hex } from './util.js'
-import { validateAnswer, rankOf, sameModel, displayModel, effortLabel, sameChoice, canonicalModel, applicableChoice, supportsEffort, effortRaise, modelRaise } from './models.js'
-import { DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, cleanText, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
+import { validateAnswer, rankOf, effortRank, sameModel, displayModel, effortLabel, sameChoice, canonicalModel, applicableChoice, supportsEffort, effortRaise, modelRaise } from './models.js'
+import { DEFAULT_DEADLINE_MS, COLD_DEADLINE_MS, cleanText, scrub, MAX_HISTORY_MESSAGES, SYSTEM_LINE, FREE_ROUTING, ROUTING_PLAN_TEXT, ROUTING_REFUSED_TEXT, ROUTING_KEY_TEXT, isFreePlan } from './iq_client.js'
 import { VERSION } from './pins.js'
 import { estimatedSavingsText, noUsageLine, NO_USAGE_FALLBACK, windowReset } from './format.js'
 import { mainPass, latestCacheWriteTtlMs } from './pricing.js'
@@ -167,11 +167,75 @@ export function carryPick(R, e) {
 }
 
 
+export function carryBelowTask(pick, taskTier) {
+  const levels = ['simple', 'medium', 'complex']
+  const need = levels.indexOf(taskTier)
+  return need >= 0 && levels.indexOf(pick?.tier) < need
+}
+
+
+
+export function belowNamed(choice, named) {
+  const pick = rankOf(choice?.model), own = rankOf(named?.model)
+  if (pick === null || own === null) return !sameModel(choice?.model, named?.model)
+  if (pick < own) return true
+  const want = named.effort ?? null, got = choice.effort ?? null
+  if (want === null || got === want) return false
+  const a = effortRank(got), b = effortRank(want)
+  if (a !== null && b !== null) return a < b
+  return !(Number.isFinite(got) && Number.isFinite(want) && got >= want)
+}
+
+
+
+export const HISTORY_FLOOR_CHARS = 300
+export function historyUnavailable(unseen, sent) {
+  if (unseen !== true) return false
+  const typed = sent && Number.isFinite(sent.chars) ? sent.chars - SYSTEM_LINE.length : 0
+  return typed < HISTORY_FLOOR_CHARS
+}
+
+
+export function keepNamed(d, named, reason) {
+  return { ...d, phase: 'kept', reason, choice: { model: named.model, effort: named.effort ?? null }, stay: null, cacheAdvantageUsd: null }
+}
+
+
+export function rememberTyped(rows, text, secrets = []) {
+  const clean = scrub(cleanText(text), secrets).slice(-32000)
+  if (!Array.isArray(rows) || !/\S/.test(clean)) return
+  rows.push({ role: 'user', source: 'typed', text: clean })
+  if (rows.length > MAX_HISTORY_MESSAGES) rows.shift()
+}
+
+
 export async function fingerprintKey(key) {
   return typeof key === 'string' && key.trim() !== '' ? sha256Hex(new TextEncoder().encode(key.trim())) : null
 }
 
+
+export function sessionIdentity(e, sessionId) {
+  const text = value => typeof value === 'string' && value.trim() !== '' ? value : null
+  return { id: text(sessionId) || text(e?.sessionId) || text(e?.session_id),
+    parent: text(e?.parentSessionId) || text(e?.parent_session_id),
+    transcript: text(e?.transcriptPath) || text(e?.transcript_path) }
+}
+
+export function sessionHandoffPick(previous, identity, nowMs, fingerprint) {
+  const { router, runtime, armed } = previous
+  const pick = router.lastAppliedPick, old = runtime.sessionIdentity
+  if (!pick || !old || !runtime.byTurn || ![...runtime.byTurn.values()].some(rec => !rec.done && rec.phase === 'applied')) return null
+  const linked = old.id && (identity.id === old.id || identity.parent === old.id) ||
+    old.transcript && identity.transcript === old.transcript
+  if (!linked || carryReason({ ...router, armed }, pick, nowMs, fingerprint)) return null
+  return { ...pick, handoffSource: { router, refusalVersion: router.refusalVersion || 0, parent: pick.handoffSource } }
+}
+
 export function carryReason(R, pick, nowMs, fingerprint) {
+  for (let source = pick.handoffSource; source; source = source.parent) {
+    if (source.router.routingRefused || source.router.pause || source.router.stopped || source.router.killed ||
+        (source.router.refusalVersion || 0) !== source.refusalVersion) return 'carry_unauthorized'
+  }
   if (statusOf(R, nowMs) !== 'on' || R.routingRefused || R.pause || R.backoffUntil > nowMs ||
       !fingerprint || !pick.keyFingerprint || pick.keyFingerprint !== fingerprint) return 'carry_unauthorized'
   if (!Number.isFinite(pick.decisionMs) || nowMs < pick.decisionMs || nowMs - pick.decisionMs > 30 * 60 * 1000) return 'carry_expired'
@@ -182,7 +246,10 @@ export function carryReason(R, pick, nowMs, fingerprint) {
 export function noteRoutingReply(R, kind, valid = false) {
   if (!['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind) && !(kind === 'ok' && valid)) return R.routingReply || 0
   R.routingReply = (R.routingReply || 0) + 1
-  if (['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind)) R.routingRefused = true
+  if (['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind)) {
+    R.routingRefused = true
+    R.refusalVersion = (R.refusalVersion || 0) + 1
+  }
   else if (kind === 'ok' && valid) {
     R.routingRefused = false
     if (R.pause?.posted === true) R.pause = null
@@ -197,7 +264,7 @@ export function settleCarried(R, rec, pick) {
 
   rec.counted = false
   settleDecision(R, rec, { phase: 'applied', source: 'local', reason: 'carried_forward',
-    choice: { ...pick.choice }, tier: null, stay: null, block: null, error: null })
+    choice: { ...pick.choice }, tier: pick.tier || null, stay: null, block: null, error: null })
   rec.waitMs = 0
 }
 
@@ -291,9 +358,13 @@ export function installRouteHold(R, parsed, nowMs, choice) {
   if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > 60) return
   const untilMs = Math.min(nowMs + seconds * 1000, R.last.startMs + (R.last.ttlMs ?? R.ttlMs))
   if (untilMs <= nowMs) return
-  R.routeHold = { remaining: n, untilMs, choice: { ...choice }, context: R.last.ctx }
+  R.routeHold = { remaining: n, untilMs, choice: { ...choice }, tier: parsed.tier || null, context: R.last.ctx }
 }
-export function fastSubmit(R, nowMs, text, named) {
+export function clearRouteHoldBelowTask(R, taskTier) {
+  if (R.routeHold && carryBelowTask(R.routeHold, taskTier)) clearRouteHold(R)
+}
+export function fastSubmit(R, nowMs, text, named, taskTier = null) {
+  if (taskTier) clearRouteHoldBelowTask(R, taskTier)
   const h = R.routeHold
   if (h && (nowMs >= h.untilMs || h.remaining <= 0 || !R.last ||
       !sameChoice(h.choice, R.last) || named && !sameChoice(h.choice, named) ||
@@ -347,6 +418,8 @@ export function decide(R, c) {
   d.source = 'iq_block'
   d.block = 'used'
   d.reason = answer.reason
+
+  if (answer.keep === true || ['decision_unavailable', 'no_rating'].includes(answer.reason)) return d
   let choice = { model: answer.model, effort: answer.effort }
 
   if (answer.stay) {
@@ -744,6 +817,8 @@ export function decisionRow(R, rec, { nowMs, sessionId }) {
     block: rec.block,
     sent: rec.sent,
     error: rec.error,
+    ...(rec.task ? { task: { basis: rec.task.basis, level10: rec.task.level10, origin: rec.task.origin } } : {}),
+    ...(rec.escalated ? { escalated: { at_step: rec.escalated.at_step, why: rec.escalated.why } } : {}),
     steps: rec.steps,
     usage: Object.fromEntries(Object.entries(rec.usage).map(([k, v]) => [k, { ...v, usd: r6(v.usd) }])),
     usd_actual: rec.priced ? r6(rec.usdActual) : null,
@@ -754,12 +829,22 @@ export function decisionRow(R, rec, { nowMs, sessionId }) {
 }
 
 
+export function actRow(rec, { nowMs, sessionId, level = 3, rule, stepModel, named, attended = false }) {
+  return { v: 1, t: 'act', ts: isoOf(nowMs), sid: sessionId, prompt: rec.idx, level, rule,
+    step_model: stepModel, named: named?.model || named, attended: attended === true, outcome: 'would_stop' }
+}
+
+
 
 
 const eff = (e) => (e ? ' · ' + e : '')
 
 export function lineFor(rec, nowMs, R) {
   const model = displayModel(rec.chosen.model)
+  if (rec.escalated) {
+    const own = rec.named || R?.named || rec.chosen
+    return 'iq-route: back to ' + displayModel(own.model) + eff(own.effort) + ' mid-turn: ' + ({ l3: 'deploy', agents: 'helper agents', edits: 'file edits' }[rec.escalated.why] || rec.escalated.why)
+  }
   if (rec.reason === 'trivial_turn') return 'iq-route: kept'
   if ((rec.phase === 'kept' || rec.phase === 'applied') && rec.reason === 'cache_warm_hold') {
     const amount = rec.cacheAdvantageUsd
@@ -770,6 +855,9 @@ export function lineFor(rec, nowMs, R) {
       return 'iq-route: ' + model + (rec.chosen.effort ? ' · ' + rec.chosen.effort + ' thinking' : '') + ' (IQ rated it ' + rec.tier + ')' + [modelRaise(rec.named?.model, rec.chosen.model), effortRaise(rec.named?.effort, rec.chosen.effort)].filter(Boolean).map(raise => ' · ' + raise).join('')
     case 'kept':
       if (rec.reason === 'not_above_named') return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (already at or below IQ\'s rating)'
+      if (rec.reason === 'history_unavailable') return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (resumed; IQ has not seen this task yet)'
+      if (rec.reason === 'task_continuation' || rec.reason === 'carry_below_task') return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (continuing a complex task)'
+      if (rec.reason === 'your_choice') return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (your choice)'
       return 'iq-route: kept ' + model + eff(rec.chosen.effort) + ' (IQ rated it ' + rec.tier + ')'
     case 'timeout':
       return "iq-route: no decision (IQ didn't answer in time); kept your model"
@@ -826,6 +914,7 @@ export function statusLines(R, nowMs) {
     out.push(l)
     if (R.backoffUntil > nowMs) out.push('iq-route: IQ is rate-limiting; no calls for ' + Math.max(1, Math.ceil((R.backoffUntil - nowMs) / 60000)) + ' more min.')
   }
+  if (R.armed && R.current?.task && R.task && Number.isFinite(R.task.level10)) out.push('task: ' + (R.task.level10 >= 70 ? 'complex' : R.task.level10 >= 40 ? 'medium' : 'simple') + ' · risk ' + Math.max(0, Math.min(3, R.task.risk || 0)))
   const usage = usageLine(R, nowMs)
   if (usage) out.push(usage)
   if (R.current && R.current.phase !== 'deciding') {

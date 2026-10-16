@@ -1,4 +1,4 @@
-# IQ Code 1.1.0
+# IQ Code 1.1.1
 
 IQ Code is a Claude Code plugin from IQ Routing. With routing on, the band shows one line: `IQ · Sonnet 5.5 · high`. It shows your current model and thinking level, omitting the thinking level when there is none. Routing off hides the band; paused routing shows `IQ · paused (/iq)`. Open `/iq` for Home, Routing, Cost, Plan, and Settings.
 
@@ -10,7 +10,7 @@ Dollar figures are **API-equivalent**: what the same usage would cost at API pri
 - Check the prompt cache countdown and your 5-hour and weekly plan pace in `/iq`.
 - See the model and thinking level in the band. Open `/iq` for the last decision, rating and reason, this prompt's cost and calls, session cost and pace, plan percentages, monthly decision count, and Est. saved.
 - Use the waving iQ flag, or switch animation off in Settings.
-- Turn routing on with your IQ key and Personal plan or higher. It stays on in new sessions on this device until `/iq-route off`. IQ picks the model and thinking for each prompt: the model and thinking in your settings are a starting point; an explicit /model, --model, /effort or ultrathink still decides. A stronger model uses more of your plan. Your tokens still go straight to Anthropic on your own plan. If you start with --model set to the same model as your settings file, IQ treats it as your settings model. Settings aliases and [1m] names are resolved to the host model for this comparison. With no model set in your user, project or local settings, the startup model, including the plain default, stays capped.
+- Turn routing on with your IQ key and Personal plan or higher. It stays on in new sessions on this device until `/iq-route off`. IQ picks the model and thinking for each prompt. The model and thinking in your settings are a starting point. An explicit /model or --model is the highest model IQ may use, and an explicit /effort or ultrathink sets the thinking level. If you raise the model or thinking after IQ picked a lighter one, IQ keeps your choice for the rest of the session. When a short prompt continues work IQ rates as hard, IQ keeps your model and thinking. If a turn IQ moved to a lighter model starts a deploy-type command, or helper agents or many file edits, the rest of that turn goes back to your model.
 
 Once you turn routing on, it stays on in new interactive sessions on this device until `/iq-route off`. Turning it off stops routing for this and future sessions. Kill switches still win; non-interactive runs never route. If IQ is unavailable, you can keep working with your chosen model. Measured usage remains available in `/iq` when a cost estimate is unavailable. Normal turns add nothing to the chat. When IQ pauses, refuses your key or cannot answer, you see one short line.
 
@@ -105,7 +105,7 @@ The cost meter, cache clock, plan pace, budgets, and themes are free.
 - **Free:** IQ Code's cost meter, cache clock, plan pace, budgets, and themes, plus gateway routing for API traffic with an IQ API key. IQ Code routing needs Personal or higher.
 - **Personal:** **$6/month**, with **2,000 routing decisions a month** for IQ Code. `/iq` Home and Cost show measured session cost and pace on every plan. Paying Team and Enterprise plans also include IQ Code routing.
 
-A routing decision is one request to IQ, made for each new prompt you send while routing is on and for each subagent task Claude starts in that session (not forks, workflow agents or teammates). A message sent while Claude is still working makes no new request. Subagent-heavy sessions use decisions faster.
+A routing decision is one request to IQ, made for each new prompt you send while routing is on and for each subagent task Claude starts in that session (not forks, teammates, or Workflow agents that run remotely or whose brief is hidden or empty). A Workflow agent with a visible brief is rated like any other subagent task: its brief goes to IQ and it uses one decision. A message sent while Claude is still working makes no new request. Short replies such as ok or continue, task notifications and subagent hand-backs make no request: they stay on IQ's last pick for up to 30 minutes, unless that pick is below what IQ rates the current task, in which case they use your model. Subagent-heavy sessions use decisions faster.
 
 Get Personal from your IQ dashboard at https://iq-routing.com/billing.
 
@@ -140,7 +140,7 @@ Session cost and pace are measured locally from reported usage. IQ Code does not
 
 Use `/iq-route off` to stop routing requests for this and future sessions on this device. To stop every IQ request, including session defaults, set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (any value, even empty or `0`), set `IQ_ROUTER_DISABLED=1`, or create `~/.claude/iq/router/OFF`. A failed kill-switch read blocks requests. The public routing destination is fixed.
 
-The key remains in Claude Code’s secure storage, or in your legacy key file or user setting. It is never copied into IQ Code’s stored state, logs, UI, or errors. IQ Code writes settings, onboarding state, capped error logs, routing decision metadata, and the size each session's prompt cache started at under `~/.claude/iq/`. Prompt history stays in memory and is cleared on `/clear` and in-process resume. IQ Code does not deliberately write prompts, answers, or tool text to disk; error text is scrubbed on a best-effort basis. Decision logs contain usage and validated model/effort labels, not the raw model string returned by IQ.
+The key remains in Claude Code’s secure storage, or in your legacy key file or user setting. It is never copied into IQ Code’s stored state, logs, UI, or errors. IQ Code writes settings, onboarding state, capped error logs, routing decision metadata, per-session routing state (a task rating, counts of session activity by fixed category, and model labels), and the size each session's prompt cache started at under `~/.claude/iq/`. Prompt history stays in memory and is cleared on `/clear` and in-process resume. IQ Code does not deliberately write prompts, answers, or tool text to disk; error text is scrubbed on a best-effort basis. Decision logs contain usage and validated model/effort labels, not the raw model string returned by IQ.
 
 The host HTTP API cannot refuse redirects. The installed host strips Authorization on cross-origin redirects; IQ Code relies on that host behaviour.
 

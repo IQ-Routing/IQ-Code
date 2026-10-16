@@ -52,12 +52,14 @@ import {
 import { measuredSpendLine, estimatedSavingsText, SAVINGS_NOTE, NOTICE, noUsageLine } from './lib/format.js'
 import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, errText, tailLines, mergeRows } from './lib/util.js'
 import { meterView, noteSeries } from './lib/meterview.js'
+import * as TaskState from './lib/task_state.js'
+import { classify } from './lib/consequence.js'
 import { trivialTurn } from './lib/trivial_turn.js'
 import { measureCall, rebuildDebit } from './lib/measured_cost.js'
 import { routeFetch } from './lib/route_transport.js'
 import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
-import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, scrub, cleanText, MAX_HISTORY_MESSAGES, displayText } from './lib/iq_client.js'
+import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, displayText } from './lib/iq_client.js'
 import { readKey, validKey, trafficOff, readUsageReporting, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
 import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
 import { registerAuth, authReset, authEnd, authOff, authCancel } from './auth_handlers.js'
@@ -71,7 +73,11 @@ import {
   newRouter,
   newRecord,
   carryPick,
+  carryBelowTask,
+  actRow,
   carryReason,
+  sessionIdentity,
+  sessionHandoffPick,
   fingerprintKey,
   noteRoutingReply,
   carryEligible,
@@ -86,6 +92,10 @@ import {
   clearRouteHold,
   settleKept,
   decide,
+  belowNamed,
+  historyUnavailable,
+  keepNamed,
+  rememberTyped,
   settleDecision,
   settleNone,
   settlePause,
@@ -188,13 +198,16 @@ function newRuntime() {
     nowMs: 0,
     explicitEffort: null,
     explicitModel: null,
-    modelSource: null,
     modelEpoch: 0,
     effortEpoch: 0,
     carryEffort: null,
     requestEpoch: 0,
     planProbe: null,
     typedPrompts: [],
+    taskWork: null, taskEdits: new Set(), task: null, taskEpoch: 0, loadedSid: null, seedJob: null, resumeFacts: null, permissionMode: null,
+    taskTurns: new Map(), bound: null, restoredProvenance: null, prompts: 0, downgradeAt: null, lighterPick: null,
+    previousPrompt: null, lastTaskMs: 0,
+    unseenHistory: false,
     pending: null,
     byTurn: new Map(),
     turnSteps: new Map(),
@@ -364,7 +377,7 @@ function usageStart($) {
   usageHelpers = new Map()
   usageNoUsagePause = false
   usageReport = USAGE_REPORTS_ENABLED ? newUsageReportClient({ now: () => Math.max(M.nowMs, Date.now()),
-    later: (ms, fn) => $.clock.after(ms, fn), fetch: (url, init) => noUsage(Math.max(M.nowMs, Date.now())) ? null : $.http.fetch(url, init), eligibility: () => usageEligibility($) }) : null
+    later: (ms, fn) => $.clock.after(ms, fn), fetch: (url, init) => noUsage(Math.max(M.nowMs, Date.now())) ? null : $.http.fetch(url, init), eligibility: () => usageEligibility($), clientVersion: VERSION }) : null
   usageSession = newUsageSession(usageReport)
   usageSession.reading(M.usage.rateLimits, M.nowMs, State.getSetting('planType'), savingsBilling(currentLimits(M.nowMs)))
 }
@@ -438,6 +451,7 @@ export function register(on, options = {}) {
 
 
   on('session.start', async ($, e, next) => {
+    const previous = { router: R, runtime: RM, armed: R.armed }
     if (LIMIT_AWARE_ENABLED) limitObservationVersion += 1
     R.armed = false
     RM.requestEpoch += 1
@@ -452,7 +466,7 @@ export function register(on, options = {}) {
       countError($, 'session.start', err)
     }
     try {
-      await rtStart($, e)
+      await rtStart($, e, previous)
     } catch (err) {
       await rtNoteError($, 'session.start', err)
     }
@@ -466,6 +480,22 @@ export function register(on, options = {}) {
       countError($, 'session.start', err)
     }
     await flushErrors($)
+    return result
+  })
+
+  on('classic.SessionStart', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      RM.permissionMode = typeof e.permission_mode === 'string' ? e.permission_mode : RM.permissionMode
+      if (e.source === 'resume' || e.source === 'fork') {
+        RM.unseenHistory = true
+        RM.resumeFacts = { context_tokens: Number.isSafeInteger(e.context_tokens) && e.context_tokens >= 0 ? e.context_tokens : null,
+          seconds_since_last_response: Number.isFinite(e.seconds_since_last_response) ? e.seconds_since_last_response : null,
+          prompt_cache_likely_expired: e.prompt_cache_likely_expired === true }
+        rtCrossCheckCache(R, RM, await $.clock.now())
+        if (!RM.taskEvidence && !RM.seedJob) await rtRestoreTask($, RM.loadedSid)
+      }
+    } catch (_) {}
     return result
   })
 
@@ -500,6 +530,10 @@ export function register(on, options = {}) {
       }
     }
     else if (rsub && rsub.start) rsub.start()
+    else if (rsub && rsub.acceptTask) rsub.acceptTask()
+    else if (rsub === null && !(result && result.drop !== undefined)) {
+      try { rtTypedOverTurn(e) } catch (_) {}
+    }
     if (sub !== null) {
       try {
         if (result && result.drop !== undefined) dropPending(sub.tracker, sub.pend)
@@ -522,7 +556,7 @@ export function register(on, options = {}) {
     let pick = null
     try { if (rtLive() && statusOf(R, await $.clock.now()) === 'on') pick = activePick } catch (_) {}
     const result = await next(e)
-    try { if (router === R && !result?.deny) rememberSpawnPick(R, pick, e, result) } catch (_) {}
+    try { if (router === R && !result?.deny) { rememberSpawnPick(R, pick, e, result); rtTaskSpawn(e) } } catch (_) {}
     return result
   })
 
@@ -551,6 +585,7 @@ export function register(on, options = {}) {
 
   on('turn.step', async function* ($, e, next) {
     const router = R, runtime = RM
+    const book = { tracker: T, meter: { ...M }, router, runtime, helpers: usageHelpers }
     let begun = { e2: e, startMs: null, rec: null, namedOriginal: { model: e.model, effort: e.effort } }
     try {
       begun = await rtStepBegin($, e)
@@ -558,16 +593,16 @@ export function register(on, options = {}) {
       await rtNoteError($, 'turn.step', err)
     }
     let key = null
-    if (M.ready && !M.quiet) {
+    if (book.meter.ready && !book.meter.quiet) {
       try {
-        key = await stepBegin($, begun.e2)
+        key = await stepBegin($, begun.e2, book)
       } catch (err) {
         countError($, 'turn.step', err)
       }
     }
 
     if (begun.e2 !== e) {
-      const nowMs = key !== null ? M.nowMs : RM.nowMs
+      const nowMs = key !== null ? book.meter.nowMs : runtime.nowMs
       const sameSession = R === router && RM === runtime
       const reason = begun.rec?.carry ? carryReason(router, begun.rec.carry, nowMs, begun.carryFingerprint) : null
       if (!sameSession || reason || router.routingRefused || !rtLive() || statusOf(router, nowMs) !== 'on') {
@@ -577,7 +612,7 @@ export function register(on, options = {}) {
         }
         begun.e2 = e
         begun.changed = false
-        if (key !== null && sameSession) noteStepStart(e, key, nowMs)
+        if (key !== null) noteStepStart(e, key, nowMs, book)
       }
     }
     if (begun.rec && R === router && RM === runtime) begun.rec.sentSteps = (begun.rec.sentSteps || 0) + 1
@@ -616,14 +651,15 @@ export function register(on, options = {}) {
         }
       }
     }
-    if (R !== router || RM !== runtime) return result
-    if (key !== null && !M.quiet) {
+    if (key !== null && !book.meter.quiet) {
       try {
-        await stepEnd($, begun.e2, key, result, begun)
+        await stepEnd($, begun.e2, key, result, begun, book)
       } catch (err) {
         countError($, 'turn.step', err)
       }
     }
+    if (R !== router || RM !== runtime) return result
+    try { await rtTaskStep($, e, result, begun) } catch (_) {}
     try {
       const pricing = await rtStepEnd($, begun.e2, result, begun)
       if (LIMIT_AWARE_ENABLED) {
@@ -736,6 +772,7 @@ export function register(on, options = {}) {
 
 
   on('session.end', async ($, e, next) => {
+    const routingWasOn = R.armed
     sessionGeneration += 1
     authEnd()
 
@@ -755,7 +792,7 @@ export function register(on, options = {}) {
       }
     }
     try {
-      await rtEnd($, e)
+      await rtEnd($, e, routingWasOn)
     } catch (err) {
       await rtNoteError($, 'session.end', err)
     }
@@ -795,7 +832,7 @@ export function register(on, options = {}) {
         RM.effortEpoch = (RM.effortEpoch || 0) + 1
         RM.carryEffort = EFFORTS.includes(value) ? value : null
       }
-      if (EFFORTS.includes(value)) RM.explicitEffort = value
+      if (EFFORTS.includes(value)) { try { rtUndoRaise('effort', value) } catch (_) {}; RM.explicitEffort = value }
       else if (value === 'auto' || value === 'default') RM.explicitEffort = null
     }
     return result
@@ -811,9 +848,9 @@ export function register(on, options = {}) {
   on('classic.PostModelSwitch', async ($, e, next) => {
     const result = await next(e)
     if (typeof e.to_model === 'string' && e.to_model !== '') {
-      RM.modelSource = e.source
       const explicit = ['picker', 'command', 'sdk'].includes(e.source) &&
         e.requested_model != null && !['default', 'auto'].includes(String(e.requested_model).trim().toLowerCase())
+      if (explicit) { try { rtUndoRaise('model', e.to_model) } catch (_) {} }
       RM.explicitModel = explicit ? e.to_model : null
       RM.modelEpoch = (RM.modelEpoch || 0) + 1
       if (['picker', 'command', 'sdk'].includes(e.source)) {
@@ -1025,12 +1062,6 @@ async function onSubmit($, e) {
 async function onSubmitLate($, e, sub) { return null }
 
 
-
-function freshSession() {
-  return R.last === null && R.stats.turns === 0 && T.lastMainEndMs === null && T.historyKnown !== true && M.boot !== 'done' && M.boot !== 'running'
-}
-
-
 function windowEstimate(u) {
   const b = u && u.context && u.context.breakdown
   const n = b && typeof b.totalTokens === 'number' ? b.totalTokens : undefined
@@ -1094,48 +1125,55 @@ function resetForNewSession(sid) {
 
 
 
-async function stepBegin($, e) {
+async function stepBegin($, e, book = { tracker: T, meter: M }) {
   const nowMs = await $.clock.now()
-  M.nowMs = nowMs
+  book.meter.nowMs = nowMs
+  if (book.tracker === T && book.meter.sessionId === M.sessionId) M.nowMs = nowMs
   const key = String(e.turnId) + ':' + String(e.index) + ':' + (e.agentId ? String(e.agentId) : '')
-  noteStepStart(e, key, nowMs)
+  noteStepStart(e, key, nowMs, book)
   $.ui.invalidate('ui.render')
   return key
 }
 
-function noteStepStart(e, key, nowMs) {
-  onStepStart(T, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
-  if (!e.agentId) M.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort }
+function noteStepStart(e, key, nowMs, book = { tracker: T, meter: M }) {
+  onStepStart(book.tracker, { key, agentId: e.agentId, model: e.model, effort: e.effort, nowMs, modelClass: modelClass(e.model), effortClass: effortClass(e.effort) })
+  if (!e.agentId) {
+    book.meter.sent = { model: e.model, effort: e.effort === undefined ? null : e.effort }
+    if (book.tracker === T && book.meter.sessionId === M.sessionId) M.sent = book.meter.sent
+  }
 }
 
-async function stepEnd($, e, key, result, begun = {}) {
+async function stepEnd($, e, key, result, begun = {}, book = { tracker: T, meter: M, router: R, runtime: RM, helpers: usageHelpers }) {
+  const { tracker, meter, router, runtime, helpers } = book
+  const current = () => tracker === T && meter.sessionId === M.sessionId
   const nowMs = await $.clock.now()
-  M.nowMs = nowMs
+  meter.nowMs = nowMs
+  if (current()) M.nowMs = nowMs
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
   const model = (u && u.model) || e.model
 
   const advisorCalls = advisorCallsIn(result)
-  const priced = u ? M.pricer.price(model, u, { main: !e.agentId, passes: advisorCalls + 1 }) : null
+  const priced = u ? meter.pricer.price(model, u, { main: !e.agentId, passes: advisorCalls + 1 }) : null
 
 
   const price = priced === null ? null : booked(priced, advisorCalls)
 
   const mainCtx = u && !e.agentId ? mainPass(u, model, advisorCalls).ctx : undefined
 
-  const helper = e.agentId && usageHelpers.get(e.agentId)
+  const helper = e.agentId && helpers.get(e.agentId)
   const named = helper ? { model: helper.model, effort: helper.effort } : begun.rec?.named || begun.namedOriginal || { model: e.model, effort: e.effort }
-  const skipped = !!(begun.rec?.localSkipped || begun.rec?.reason === 'trivial_turn' || (!begun.rec && !R.last?.routed))
-  const switched = helper ? !!(helper.routed || helper.prev?.routed) : !e.agentId && !skipped && !!(begun.changed || R.last?.routed)
-  const settingsTtl = ttlIsKnown(RM.ttl || {}, M.usage?.rateLimits) ? cacheTtlMs({ ...(RM.ttl || {}), onSubscription: onSubscription(M.usage?.rateLimits, nowMs) }) : null
-  const writeTtl = e.agentId ? 300 : (latestCacheWriteTtlMs(u, model) ?? R.observedCacheTtlMs ?? settingsTtl ?? (R.ttlKnown ? R.ttlMs : null)) / 1000 || null
-  const rebuildUsd = rebuildDebit(M.pricer, { named, usage: u, prev: e.agentId ? helper?.prev : R.last,
-    startMs: begun.startMs ?? nowMs, ttlMs: R.last?.ttlMs ?? (R.ttlKnown ? R.ttlMs : 3600000), switched, writeTtl, advisorCalls })
-  const measured = u ? measureCall(M.pricer, { model, effort: e.effort, named, usage: u,
+  const skipped = !!(begun.rec?.localSkipped || begun.rec?.reason === 'trivial_turn' || (!begun.rec && !router.last?.routed))
+  const switched = helper ? !!(helper.routed || helper.prev?.routed) : !e.agentId && !skipped && !!(begun.changed || router.last?.routed)
+  const settingsTtl = ttlIsKnown(runtime.ttl || {}, meter.usage?.rateLimits) ? cacheTtlMs({ ...(runtime.ttl || {}), onSubscription: onSubscription(meter.usage?.rateLimits, nowMs) }) : null
+  const writeTtl = e.agentId ? 300 : (latestCacheWriteTtlMs(u, model) ?? router.observedCacheTtlMs ?? settingsTtl ?? (router.ttlKnown ? router.ttlMs : null)) / 1000 || null
+  const rebuildUsd = rebuildDebit(meter.pricer, { named, usage: u, prev: e.agentId ? helper?.prev : router.last,
+    startMs: begun.startMs ?? nowMs, ttlMs: router.last?.ttlMs ?? (router.ttlKnown ? router.ttlMs : 3600000), switched, writeTtl, advisorCalls })
+  const measured = u ? measureCall(meter.pricer, { model, effort: e.effort, named, usage: u,
     main: !e.agentId, advisorCalls, writeTtl, switched, rebuildUsd, skipped: e.agentId ? !switched : skipped }) : null
   begun.measured = measured
-  onStepEnd(T, { key, agentId: e.agentId, model, effort: e.effort, hasUsage: price !== null, price, measured, mainCtx, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
+  onStepEnd(tracker, { key, agentId: e.agentId, model, effort: e.effort, hasUsage: price !== null, price, measured, mainCtx, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
     usageComplete: !!u && ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].every((k) => Number.isSafeInteger(u[k]) && u[k] >= 0) })
-  if (T.cur && T.cur.human) noteSeries(M.series, T.cur.idx, T.cur.usd)
+  if (tracker.cur && tracker.cur.human) noteSeries(meter.series, tracker.cur.idx, tracker.cur.usd)
   $.ui.invalidate('ui.render')
 }
 
@@ -1329,13 +1367,261 @@ const ROUTING_OFF = { v: 1, status: 'off', pause_until: null, named: null, curre
 
 
 
-async function rtStart($, e) {
+
+function rtTaskContext(context) {
+  if (!RM.task) RM.task = { level10: 10, streak: 0, origin: 'none', risk: 0 }
+  if (RM.unseenHistory && !RM.taskEvidence && Number.isFinite(context)) {
+    RM.task.level10 = Math.max(RM.task.level10, Math.round(TaskState.contextPrior(context)))
+    RM.task.origin = 'context'
+  }
+  R.task = RM.task
+}
+function rtCrossCheckCache(router, runtime, nowMs) {
+  const facts = runtime.resumeFacts
+  if (!router.last || !facts) return
+  if (facts.prompt_cache_likely_expired || Number.isFinite(facts.seconds_since_last_response) &&
+      Math.abs(nowMs - router.last.endMs - facts.seconds_since_last_response * 1000) > 5000) router.last.cachedPrefix = 0
+}
+async function rtRestoreTask($, sid) {
+  if (typeof sid !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(sid)) return
+  const runtime = RM, router = R
+  runtime.seedJob = null
+  runtime.taskEpoch = (runtime.taskEpoch || 0) + 1
+  if (runtime.loadedSid && runtime.loadedSid !== sid) {
+    runtime.typedPrompts = []
+    runtime.explicitModel = null
+    runtime.explicitEffort = null
+    runtime.modelEpoch = 0
+    runtime.effortEpoch = 0
+    runtime.carryEffort = null
+    runtime.restoredProvenance = null
+    runtime.byTurn = new Map()
+    runtime.taskTurns = new Map()
+    runtime.pending = null
+    runtime.requestEpoch += 1
+    runtime.unseenHistory = false
+    try {
+      const turns = await $.session.turns()
+      runtime.unseenHistory = typeof turns === 'number' && turns > 0
+    } catch (_) {}
+    router.last = null
+    router.named = null
+    router.current = null
+    router.lastAppliedPick = null
+    router.agentPicks.clear()
+    clearRouteHold(router)
+  }
+  runtime.loadedSid = sid
+  runtime.task = { level10: 10, streak: 0, origin: 'none', risk: 0 }
+  runtime.taskEvidence = false
+  runtime.taskWork = TaskState.newWork()
+  runtime.taskEdits = new Set()
+  runtime.bound = null
+  runtime.prompts = 0
+  runtime.previousPrompt = null
+  runtime.lighterPick = null
+  const nowMs = await $.clock.now()
+  let saved = null
+  try {
+    const path = pathIn(runtime.home, RT_DIR, 'sessions.json')
+    if (await $.fs.exists(path)) {
+      const text = await $.fs.read(path)
+      saved = TaskState.sessionRecord(text, sid, nowMs)
+    }
+  } catch (_) {}
+  if (RM !== runtime || R !== router || runtime.loadedSid !== sid) return
+  if (saved) {
+    router.last = saved.last || null
+    router.named = saved.named || null
+    router.observedCacheTtlMs = saved.observedCacheTtlMs
+    router.compactions = saved.compactions
+    runtime.task = TaskState.fold({ ...saved.belief, origin: 'restored' }, TaskState.newWork(), { idleS: Math.max(0, (nowMs - (saved.updatedMs || saved.last?.endMs || nowMs)) / 1000), completed: false })
+    runtime.taskEvidence = !['none', 'context'].includes(saved.belief.origin)
+    runtime.taskWork = saved.work || TaskState.newWork()
+    runtime.restoreObservedPending = true
+    runtime.bound = saved.bound
+    runtime.lighterPick = saved.lighterPick || (saved.last?.routed && belowNamed(saved.last, saved.named) ? { model: saved.last.model, effort: saved.last.effort } : null)
+    runtime.prompts = saved.prompts || 0
+    runtime.restoredProvenance = { ...saved.provenance, model: saved.named?.model, effort: saved.named?.effort }
+    runtime.lastTaskMs = nowMs
+    rtCrossCheckCache(router, runtime, nowMs)
+  } else if (runtime.unseenHistory) {
+    const seedEpoch = runtime.taskEpoch
+    runtime.seedJob = (async () => {
+      try {
+        const messages = await $.session.messages()
+        if (RM !== runtime || R !== router || runtime.loadedSid !== sid || runtime.taskEpoch !== seedEpoch) return
+        const seed = TaskState.scanSeed(messages)
+        if (seed.steps || seed.edits || seed.agents || seed.f2 || seed.f3) {
+          runtime.task = TaskState.fold({ level10: Math.max(runtime.task?.level10 || 10, Math.round(TaskState.contextPrior(runtime.resumeFacts?.context_tokens || 0))), streak: 0, origin: 'seeded' }, seed, { completed: false })
+          runtime.taskEvidence = true
+          router.task = runtime.task
+        }
+      } catch (_) {}
+    })()
+  }
+  router.task = runtime.task
+}
+async function rtWriteTask($, router, path, sid, record, nowMs, closing = false) {
+  if (!router.armed && !closing) return
+  const exists = await $.fs.exists(path)
+  let old = exists ? await $.fs.read(path) : ''
+  if (!router.armed && !closing) return
+  if (exists && (old === '' || !TaskState.sessionsSnapshot(old).ok)) {
+
+    old = await $.fs.read(path)
+    if (typeof old !== 'string' || !router.armed && !closing) return
+    if (old === '' || !TaskState.sessionsSnapshot(old).ok) {
+      const fresh = TaskState.sessionsText('', sid, record, nowMs)
+      if (typeof fresh !== 'string') return
+
+
+      await $.fs.write(path + '.bad', old)
+      if (!router.armed && !closing) return
+      await $.fs.write(path, fresh)
+      return
+    }
+  }
+  const text = TaskState.sessionsText(old, sid, record, nowMs)
+  if (typeof text !== 'string' || !router.armed && !closing) return
+  await $.fs.write(path, text)
+}
+function rtTaskTier() {
+  const task = RM.task
+  if (!task) return 'complex'
+  return TaskState.tierOf(task.level10 / 10 + TaskState.margin(task.risk || 0, 0, false))
+}
+function rtTaskUndo() {
+  if (!RM.task) return
+  RM.taskEpoch = (RM.taskEpoch || 0) + 1
+  RM.task = TaskState.fold(RM.task, TaskState.newWork(), { undo: 1, completed: false })
+  R.task = RM.task
+}
+function rtUndoRaise(dimension, value) {
+  if (RM.downgradeAt == null && !RM.lighterPick) return
+  const previous = RM.lighterPick || R.current?.choice || R.lastAppliedPick?.choice
+  if (!previous) return
+  const changed = { ...previous, [dimension]: value }
+  if (!belowNamed(previous, changed)) return
+  if (RM.downgradeAt != null && RM.prompts - RM.downgradeAt <= 2) rtTaskUndo()
+  RM.bound ||= { model: null, effort: null }
+  RM.bound[dimension] = value
+}
+function rtBoundRejects(choice) {
+  const bound = RM.bound
+  if (!bound) return false
+  return belowNamed(choice, { model: bound.model || choice.model, effort: bound.effort ?? null })
+}
+function rtTaskPrompt(text, nowMs) {
+  RM.prompts = Math.min(100000, (RM.prompts || 0) + 1)
+  if (RM.task && RM.lastTaskMs) RM.task = TaskState.fold(RM.task, TaskState.newWork(), { idleS: Math.max(0, (nowMs - RM.lastTaskMs) / 1000), completed: false })
+  if (RM.task) for (const key of ['k1', 'k2', 'k3']) if (RM.task[key] != null) RM.task[key] = Math.min(100000, RM.task[key] + 1)
+  const words = new Set((String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || []))
+  if (RM.downgradeAt != null && RM.prompts - RM.downgradeAt <= 2) {
+    const old = RM.previousPrompt
+    const union = old ? new Set([...old.words, ...words]) : new Set()
+    const overlap = old && union.size ? [...words].filter(w => old.words.has(w)).length / union.size : 0
+    if (old && nowMs - old.atMs < 90000 && (overlap >= 0.6 || /\b(?:no|still|again|try again|that's wrong|didn't work)\b/i.test(text || ''))) rtTaskUndo()
+    if (/\bultrathink\b/i.test(text || '')) { rtTaskUndo(); RM.bound = { ...RM.bound, effort: 'max' } }
+  }
+  RM.previousPrompt = { words, atMs: nowMs }
+}
+function rtTaskSpawn(e) {
+  const turn = RM.taskTurns?.get(e.turnId) || [...(RM.taskTurns?.values() || [])].at(-1)
+  if (turn && turn.active && R.armed) {
+    turn.work.agents = Math.min(999, turn.work.agents + 1)
+    if (RM.taskWork) RM.taskWork.agents = Math.min(999, RM.taskWork.agents + 1)
+  }
+}
+async function rtTaskStep($, e, result, begun) {
+  const main = e.agentId == null
+  const turn = RM.taskTurns?.get(e.turnId) || (!main ? [...(RM.taskTurns?.values() || [])].at(-1) : null)
+  if (!turn || !turn.active || !R.armed || turn.router !== R || turn.runtime !== RM) return
+  RM.taskEpoch = (RM.taskEpoch || 0) + 1
+  TaskState.noteStep(turn.work, turn.edits, { main, toolUses: result?.toolUses,
+    outputTokens: result?.usage?.output_tokens || 0, permissionMode: RM.permissionMode })
+  RM.taskWork ||= TaskState.newWork()
+  RM.taskEdits ||= new Set()
+  TaskState.noteStep(RM.taskWork, RM.taskEdits, { main, toolUses: result?.toolUses, outputTokens: result?.usage?.output_tokens || 0, permissionMode: RM.permissionMode })
+
+  if (TaskState.workLevel(RM.taskWork) >= 70) RM.taskEvidence = true
+  if (!RM.unseenHistory || RM.taskEvidence) RM.task.origin = 'live'
+  const workBelief = TaskState.fold(RM.task, RM.taskWork, { completed: false })
+  RM.task = workBelief
+  R.task = RM.task
+  const rec = begun.rec
+  if (!main || !rec || rec.phase !== 'applied' || rec.userOverride || !belowNamed(rec.choice, rec.named)) return
+  const l3 = belowNamed(begun.e2, rec.named) && (result?.toolUses || []).map(use => classify({ tool: use.name || use.tool, input: use.input })).find(value => value.level === 3)
+  const why = l3 ? 'l3' : turn.work.agents >= 2 ? 'agents' : turn.work.edits >= 5 ? 'edits' : null
+  if (why && !rec.escalated) rec.escalated = { at_step: Math.max(0, e.index + 1), why }
+  if (l3) {
+    const row = actRow(rec, { nowMs: await $.clock.now(), sessionId: turn.sid, level: 3, rule: l3.rule,
+      stepModel: begun.e2.model, named: rec.named, attended: ['default', 'acceptEdits', 'plan'].includes(RM.permissionMode) })
+    if (row) try { await rtAppendRows({ exists: path => $.fs.exists(path), read: path => $.fs.read(path), write: (path, text) => $.fs.write(path, text) }, [row], RM.nowMs) } catch (_) {}
+  }
+
+}
+async function rtTaskComplete($, e) {
+  const turn = RM.taskTurns?.get(e.turnId)
+  if (!turn) return
+  RM.taskTurns.delete(e.turnId)
+  if (turn.router !== R || turn.runtime !== RM || !turn.active || !R.armed) return
+  RM.taskEpoch = (RM.taskEpoch || 0) + 1
+  const rec = RM.byTurn.get(e.turnId)
+  const undo = (rec?.phase === 'applied' && belowNamed(rec.choice, rec.named) || RM.downgradeAt != null && RM.prompts - RM.downgradeAt <= 2) && (e.isAborted || e.reason === 'error' || turn.work.steps === 0)
+  turn.work.turns = 1
+  RM.taskWork ||= TaskState.newWork()
+  RM.taskWork.turns = Math.min(64, RM.taskWork.turns + 1)
+  RM.task = TaskState.fold(RM.task, RM.taskWork, { undo: undo ? 1 : 0, turnWork: turn.work })
+  R.task = RM.task
+  if (TaskState.workLevel(turn.work) >= 70) RM.taskEvidence = true
+  RM.lastTaskMs = await $.clock.now()
+  if (!R.armed) return
+  const record = { belief: RM.task, work: RM.taskWork, last: R.last, named: R.named,
+    provenance: { explicitModel: RM.explicitModel, explicitEffort: RM.explicitEffort }, bound: RM.bound, lighterPick: RM.lighterPick,
+    observedCacheTtlMs: R.observedCacheTtlMs, compactions: R.compactions, prompts: RM.prompts }
+  const runtime = RM, path = pathIn(RM.home, RT_DIR, 'sessions.json'), nowMs = RM.lastTaskMs
+  const save = () => rtWriteTask($, turn.router, path, turn.sid, record, nowMs)
+  runtime.chain = runtime.chain.then(save, save)
+  try { await runtime.chain } catch (_) {}
+}
+async function rtDropTask($, allowWrite = R.armed) {
+  const sid = RM.loadedSid, runtime = RM
+  RM.taskEpoch = (RM.taskEpoch || 0) + 1
+  RM.task = { level10: 10, streak: 0, origin: 'none', risk: 0 }
+  RM.taskEvidence = false
+  RM.taskWork = TaskState.newWork()
+  RM.taskEdits = new Set()
+  RM.bound = null
+  RM.previousPrompt = null
+  RM.downgradeAt = null
+  RM.lighterPick = null
+  RM.unseenHistory = false
+  R.task = RM.task
+  if (!allowWrite || !sid || !RM.home) return
+  const router = R, closing = !R.armed
+  const path = pathIn(RM.home, RT_DIR, 'sessions.json'), nowMs = await $.clock.now()
+  const save = () => rtWriteTask($, router, path, sid, null, nowMs, closing)
+  runtime.chain = runtime.chain.then(save, save)
+  try { await runtime.chain } catch (_) {}
+}
+
+async function rtStart($, e, previous = null) {
   R = newRouter()
   RM = newRuntime()
+
+  try {
+    const turns = await $.session.turns()
+    RM.unseenHistory = typeof turns === 'number' && turns > 0
+  } catch (_) {}
   RM.nowMs = await $.clock.now()
   RM.home = await userHome($)
   RM.cwd = e && typeof e.cwd === 'string' ? e.cwd : null
   RM.root = $.plugin.root
+  let sid = null
+  try { sid = await $.session.id() } catch (_) {}
+  RM.sessionIdentity = sessionIdentity(e, sid)
+  try { await rtRestoreTask($, sid) } catch (_) {}
   if (LIMIT_AWARE_ENABLED) {
     limitState = newLimitState(State.getLimitReading())
     limitObservationVersion += 1
@@ -1364,6 +1650,15 @@ async function rtStart($, e) {
   RM.ready = true
   await rtGates($)
   await rtAutoArm($)
+  if (previous?.router.lastAppliedPick) {
+    const fingerprint = await fingerprintKey(await readKey(iqAccess($)))
+    const pick = sessionHandoffPick(previous, RM.sessionIdentity, await $.clock.now(), fingerprint)
+    if (pick && await rtArm(armAccess($))) {
+      R.lastAppliedPick = RM.handoffPick = pick
+      if (previous.runtime.task) { RM.task = TaskState.fold(previous.runtime.task, previous.runtime.taskWork || TaskState.newWork(), { completed: false }); R.task = RM.task }
+      for (const name of ['modelEpoch', 'effortEpoch', 'explicitModel', 'explicitEffort', 'carryEffort']) RM[name] = previous.runtime[name]
+    } else if (!pick) say($, 'iq-route: the host did not provide a usable link to the running prompt. Its earlier pick was not carried.')
+  }
 }
 
 
@@ -1495,7 +1790,7 @@ async function rtNamedHint($, prompt = '') {
     vertex: () => $.env.get('CLAUDE_CODE_USE_VERTEX'), foundry: () => $.env.get('CLAUDE_CODE_USE_FOUNDRY'), baseUrl: () => $.env.get('ANTHROPIC_BASE_URL') })
   const modelExplicit = explicitModel({ env: await safe($.env.get('ANTHROPIC_MODEL')), sources, runtimeModel: RM.explicitModel,
     startupModel: model, resolveModel: value => resolveBase(value, model, host) }) !== null
-  return { model, modelExplicit, ...effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit: RM.explicitEffort != null, prompt }) }
+  return { model, modelExplicit, ...effortFacts({ model, env, sources, runtimeEffort, runtimeExplicit: RM.explicitEffort != null, observedEffort: sameModel(R.named?.model, model) ? R.named?.effort : null, prompt }) }
 }
 
 
@@ -1507,21 +1802,32 @@ const rtIsHuman = (e) => {
 
 
 async function rtSubmit($, e) {
+  try {
+    const sid = await $.session.id()
+    if (sid !== RM.loadedSid) await rtRestoreTask($, sid)
+  } catch (_) {}
   if (!RM.ready || !R.armed || e.agentId != null || (!rtIsHuman(e) && !carryEligible(e))) return null
   if (e.turnId !== undefined) return null
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
+  const taskRuntime = RM, taskRouter = R
+  const acceptTask = () => {
+    if (RM === taskRuntime && R === taskRouter && R.armed) {
+      try { rtTaskPrompt(e.text, nowMs) } catch (_) {}
+    }
+  }
   if (carryEligible(e) || trivialTurn(e.text)) {
     const rec = newRecord(R, { nowMs, sessionModel: await safe($.session.model()) })
     rec.carry = carryEligible(e) ? carryPick(R, e) : null
     rec.effortHint = await rtNamedHint($, e.text)
     rec.local = { action: 'local', phase: 'kept', reason: 'trivial_turn', source: 'none', counted: false }
-    const sub = { rec, prev: R.current, runtime: RM, router: R, skipped: true }
+    const sub = { rec, prev: R.current, runtime: RM, router: R, skipped: true, acceptTask }
     R.current = rec
     RM.pending = rec
     return sub
   }
   await rtKillCheck($)
+  try { if (R.routeHold && carryBelowTask({ tier: R.routeHold.tier }, rtTaskTier())) clearRouteHold(R) } catch (_) {}
   const holdBefore = R.routeHold ? { ...R.routeHold, choice: { ...R.routeHold.choice } } : null
   let plan = planSubmit(R, nowMs, R.ttlMs)
   if (plan.action === 'call') plan = fastSubmit(R, nowMs, e.text, R.routeHold ? await rtNamedHint($, e.text) : null) || plan
@@ -1541,15 +1847,23 @@ async function rtSubmit($, e) {
   const sub = { rec, prev: R.current, runtime: RM, router: R, holdBefore }
   R.current = rec
   RM.pending = rec
+  const text = typeof e.text === 'string' ? e.text : ''
+  rec.taskSigma = typeof TaskState === 'undefined' ? 1 : TaskState.lexicalSigma(text)
+  rec.taskRiskWords = /\b(?:deploy|release|publish|push|merge|migrate|rollback|delete|drop|prod|production|promote|secret|credential|billing|payment)\b/i.test(text)
+  const runtime = RM
+  const requestEpoch = RM.requestEpoch
+
+  const remember = () => { if (RM === runtime && RM.requestEpoch === requestEpoch) { acceptTask(); rememberTyped(RM.typedPrompts, text) } }
   if (plan.action === 'local') {
     rec.local = plan
-    if (plan.reason !== 'server_hold') return sub
+    if (plan.reason !== 'server_hold') { sub.start = remember; return sub }
     rec.local.choice = { ...holdBefore.choice }
     rec.local.lease = R.routeHold
   }
   const key = await readKey(iqAccess($))
   if (typeof key !== 'string' || key.trim() === '') {
     rec.local = { action: 'local', phase: 'error', reason: 'error', source: 'none', counted: true, error: 'no_key' }
+    sub.start = remember
     return sub
   }
   rec.keyFingerprint = await fingerprintKey(key)
@@ -1559,10 +1873,7 @@ async function rtSubmit($, e) {
   rec.job = new Promise((resolve) => {
     finish = resolve
   })
-  const text = typeof e.text === 'string' ? e.text : ''
   const rows = RM.typedPrompts.slice()
-  const runtime = RM
-  const requestEpoch = RM.requestEpoch
   const startRoute = (immediate = false) => {
     if (RM !== runtime || RM.requestEpoch !== requestEpoch) { finish(); return }
     const launch = () => {
@@ -1580,12 +1891,20 @@ async function rtSubmit($, e) {
   }
   sub.start = () => {
     if (RM !== runtime || RM.requestEpoch !== requestEpoch) { finish(); return }
-    RM.typedPrompts.push({ role: 'user', source: 'typed', text: scrub(cleanText(text), [key]).slice(-32000) })
-    if (RM.typedPrompts.length > MAX_HISTORY_MESSAGES) RM.typedPrompts.shift()
+    acceptTask()
+    rememberTyped(RM.typedPrompts, text, [key])
     if (rec.local?.reason === 'server_hold') rec.startRoute = startRoute
     else startRoute()
   }
   return sub
+}
+
+
+
+function rtTypedOverTurn(e) {
+  if (!rtLive() || e.agentId != null || e.turnId === undefined || !rtIsHuman(e)) return
+  const status = statusOf(R, RM.nowMs)
+  if (status === 'on' || status.startsWith('paused_')) rememberTyped(RM.typedPrompts, e.text)
 }
 
 
@@ -1630,9 +1949,11 @@ async function rtFetch($, req, deadlineMs, runtime, requestEpoch) {
 async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
   try {
     if (!R.armed || await trafficOff(iqAccess($)) || RM !== runtime || RM.requestEpoch !== requestEpoch) return { kind: 'error', code: 'traffic_disabled', latencyMs: 0, doneMs: RM.nowMs }
+    try { if (runtime.seedJob) await rtRace($, runtime.seedJob, Math.min(300, Math.max(0, rec.deadlineMs - await $.clock.now()))) } catch (_) {}
     const named = await rtNamedHint($, text)
     if (rec.explicitEffort != null) { named.effort = rec.explicitEffort; named.effortExplicit = true }
     rec.effortHint = named
+    rec.observedHint = sameModel(R.named?.model, named.model) && EFFORTS.includes(R.named?.effort)
     if (rec.named) rec.named.modelExplicit = named.modelExplicit
     if (!rec.named && named.effortExplicit === true) rec.explicitEffort = named.effort
     const observed = await safe($.session.usage())
@@ -1641,7 +1962,10 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
     const seen = observed && observed.context && observed.context.tokens
     const contextFacts = routeContextFacts(R, seen)
     let context = contextFacts.context_tokens
-    if (context === null && freshSession()) context = windowEstimate(await safe($.session.usage({ breakdown: 'summary' }))) || null
+
+    if (context === null && Number.isSafeInteger(RM.resumeFacts?.context_tokens)) context = RM.resumeFacts.context_tokens
+    if (context === null) context = windowEstimate(await safe($.session.usage({ breakdown: 'summary' }))) || null
+    try { rtTaskContext(context) } catch (_) {}
     const now = await $.clock.now()
     R.ttlMs = cacheTtlMs({ ...RM.ttl, onSubscription: limits?.billing_mode === 'subscription' || onSubscription(observed && observed.rateLimits, now) })
     R.ttlKnown = ttlIsKnown(RM.ttl, observed && observed.rateLimits)
@@ -1708,13 +2032,16 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
 function rtTurnStart(e) {
   if (e.agentId) return
   if (RM.droppedPrompt && !RM.pending) { RM.droppedPrompt = false; return }
+  try { if (R.armed) RM.taskTurns.set(e.turnId, { work: TaskState.newWork(), edits: new Set(), router: R, runtime: RM, sid: RM.loadedSid, active: true }) } catch (_) {}
   RM.droppedPrompt = false
   let rec = RM.pending
+  const handoff = RM.handoffPick
+  RM.handoffPick = null
   if (!rec) {
     if (!rtLive() || RM.byTurn.has(e.turnId)) return
 
     rec = newRecord(R, { nowMs: RM.nowMs, sessionModel: R.named?.model })
-    rec.carry = carryEligible(e) ? carryPick(R, e) : null
+    rec.carry = handoff || (carryEligible(e) ? carryPick(R, e) : null)
     rec.local = { action: 'local', phase: 'kept', reason: 'trivial_turn', source: 'local', counted: false }
     R.current = rec
   }
@@ -1745,6 +2072,8 @@ async function rtStepBegin($, e) {
   if (!rec && !rtLive()) {
 
 
+
+    RM.unseenHistory = true
     out.startMs = await $.clock.now()
     return out
   }
@@ -1754,6 +2083,20 @@ async function rtStepBegin($, e) {
     if (!rec.effortHint) rec.effortHint = await rtNamedHint($)
     rec.explicitEffort = rec.effortHint?.effortExplicit || RM.explicitEffort != null ? e.effort ?? null : null
     rec.named = { model: e.model, effort: e.effort === undefined ? null : e.effort, effortExplicit: rec.explicitEffort != null, modelExplicit: rec.effortHint?.modelExplicit !== false }
+    try {
+      const saved = RM.restoredProvenance
+      if (saved) {
+        if (sameModel(saved.model, e.model)) RM.explicitModel = saved.explicitModel
+        if (sameModel(saved.model, e.model) && saved.effort === e.effort) RM.explicitEffort = saved.explicitEffort
+        else if (RM.bound) RM.bound.effort = null
+        if (!sameModel(saved.model, e.model) && RM.bound) RM.bound.model = null
+        RM.restoredProvenance = null
+        rec.explicitEffort = RM.explicitEffort != null ? e.effort ?? null : rec.explicitEffort
+        rec.named.effortExplicit = rec.explicitEffort != null
+      }
+      rec.namedChanged = RM.restoreObservedPending === true && rec.observedHint === true && rec.effortHint?.effortExplicit !== true && rec.effortHint?.effort != null && rec.effortHint.effort !== e.effort
+    } catch (_) {}
+    RM.restoreObservedPending = false
     R.named = rec.named
     await rtDecide($, rec)
     rec.pickEpochs ||= { model: RM.modelEpoch || 0, effort: RM.effortEpoch || 0 }
@@ -1774,7 +2117,8 @@ async function rtStepBegin($, e) {
     const fingerprint = await fingerprintKey(await readKey(iqAccess($)))
     out.carryFingerprint = fingerprint
     RM.nowMs = await $.clock.now()
-    const reason = carryReason(R, rec.carry, RM.nowMs, fingerprint)
+    let reason = carryReason(R, rec.carry, RM.nowMs, fingerprint)
+    try { if (!reason && belowNamed(rec.carry.choice, out.namedOriginal) && carryBelowTask(rec.carry, rtTaskTier())) reason = 'carry_below_task' } catch (_) {}
     if (reason) {
       rec.named = { ...out.namedOriginal }
       settleKept(R, rec, reason)
@@ -1786,9 +2130,9 @@ async function rtStepBegin($, e) {
     rec.choice = { model: out.e2.model, effort: out.e2.effort ?? null }
     rec.chosen = { model: out.e2.model, effort: effortLabel(out.e2.effort) }
   }
-  if (!R.routingRefused && rec?.reason !== 'carried_forward' && !rec?.userOverride && rec?.phase === 'applied' && rtLive() && statusOf(R, out.startMs) === 'on') {
+  if (!R.routingRefused && rec?.reason !== 'carried_forward' && !rec?.userOverride && !rec?.escalated && rec?.phase === 'applied' && rtLive() && statusOf(R, out.startMs) === 'on') {
     R.lastAppliedPick = { choice: { model: out.e2.model, effort: out.e2.effort ?? null },
-      named: { ...rec.named }, epochs: { model: RM.modelEpoch || 0, effort: RM.effortEpoch || 0 }, pricedAs: rec.pricedAs,
+      tier: rec.tier, named: { ...rec.named }, epochs: { model: RM.modelEpoch || 0, effort: RM.effortEpoch || 0 }, pricedAs: rec.pricedAs,
       keyFingerprint: rec.keyFingerprint, decisionMs: rec.decisionMs }
   }
   return out
@@ -1797,6 +2141,7 @@ async function rtStepBegin($, e) {
 
 
 function rtApply(e, rec) {
+  if (rec.escalated) return e
   if (e.agentId != null || rec.phase !== 'applied' || !rec.named || ((RM.modelEpoch || 0) <= (rec.pickEpochs?.model || 0) && e.model !== (rec.requestModel || rec.named.model))) return e
   if (!rtLive() || R.routingRefused || statusOf(R, RM.nowMs) !== 'on') {
     if ((rec.sentSteps || rec.steps) === 0) settleKept(R, rec, 'routing_unavailable')
@@ -1809,6 +2154,7 @@ function rtApply(e, rec) {
   if ((RM.effortEpoch || 0) > (rec.pickEpochs?.effort || 0)) choice = { ...choice, effort: RM.carryEffort ?? e.effort ?? null }
   if (!sameChoice(automatic, choice)) rec.userOverride = true
   if (rec.userOverride) {
+    try { rtTaskUndo(); if (belowNamed(rec.choice, named)) RM.bound = { ...named } } catch (_) {}
     settleUserChoice(R, rec, named)
     return e
   }
@@ -1836,11 +2182,16 @@ async function rtDecide($, rec) {
     const unauthorized = pick ? carryReason(R, pick, t0, fingerprint) : null
     const validCarry = pick && !unauthorized && sameModel(rec.named.model, pick.named.model) && validateAnswer({
       v: 2, ...pick.choice, stay: false, reason_code: 'carried_forward' }, rec.named).ok
-    if (validCarry && p.reason === 'trivial_turn' && statusOf(R, t0) === 'on' && !(R.backoffUntil > t0) && (!R.lastError || R.lastError === 'decisions.write')) {
+    const carryOn = validCarry && p.reason === 'trivial_turn' && statusOf(R, t0) === 'on' && !(R.backoffUntil > t0) && (!R.lastError || R.lastError === 'decisions.write')
+
+    const downgrade = carryOn && belowNamed(pick.choice, rec.named) && (typeof rtTaskTier !== 'function' || carryBelowTask(pick, rtTaskTier()))
+    if (carryOn && !downgrade) {
       rec.requestModel = rec.named.model
       settleCarried(R, rec, pick)
-    } else if (p.phase === 'kept') settleKept(R, rec, unauthorized || p.reason)
-    else if (p.phase === 'paused') settleNone(R, rec, 'paused', p.reason)
+    } else if (p.phase === 'kept') {
+      if (downgrade) rec.carry = null
+      settleKept(R, rec, unauthorized || (downgrade ? 'carry_below_task' : p.reason))
+    } else if (p.phase === 'paused') settleNone(R, rec, 'paused', p.reason)
     else if (p.error === 'no_key') settleNone(R, rec, 'error', 'error', 'no_key')
     else settleNone(R, rec, 'error', 'backoff', 'http_429')
   } else {
@@ -1860,9 +2211,37 @@ async function rtDecide($, rec) {
     } else if (c.kind === 'ok') {
       rec.latencyMs = c.latencyMs
       rec.iqRequestId = c.parsed.request_id
-      const d = decide(R, { nowMs: t1, named: rec.named, est: c.parsed, explicitEffort: rec.explicitEffort })
+      let d = decide(R, { nowMs: t1, named: rec.named, est: c.parsed, explicitEffort: rec.explicitEffort })
+      let guarded = false
+
+      const blindHistory = historyUnavailable(RM.unseenHistory, rec.sent) &&
+        (!RM.taskEvidence || RM.task?.level10 >= 60 && (rec.taskSigma ?? 0) < 0.5)
+      try {
+        const task = RM.task
+        const score = { simple: 2.5, medium: 5.5, complex: 8.5 }[c.parsed.tier] ?? 5.5
+        if (task) {
+          const effective = TaskState.effScore(score, task.level10, rec.taskSigma ?? 0)
+          const localKeep = effective + TaskState.margin(task.risk || 0, rec.taskSigma ?? 0, rec.taskRiskWords) >= 7 && c.parsed.block?.task?.enforced !== true
+          if (d.phase === 'applied' && belowNamed(d.choice, rec.named)) {
+            const reason = rec.namedChanged ? 'named_changed' : rtBoundRejects(d.choice) ? 'your_choice' :
+              localKeep ? 'task_continuation' : blindHistory ? 'history_unavailable' : null
+            if (reason) { d = keepNamed(d, rec.named, reason); guarded = true }
+          }
+          RM.taskEpoch = (RM.taskEpoch || 0) + 1
+          task.level10 = Math.max(task.level10, score * 10)
+          task.issued = Math.max(0, Math.floor(t1))
+          RM.taskWork = TaskState.newWork()
+          RM.taskEdits = new Set()
+          rec.task = { basis: d.reason === 'history_unavailable' ? 'none' : localKeep ? 'task' : 'prompt', level10: Math.round(task.level10), origin: task.origin }
+          R.task = task
+          if (d.phase === 'applied' && belowNamed(d.choice, rec.named)) { RM.downgradeAt = RM.prompts; RM.lighterPick = { ...d.choice } }
+        }
+      } catch (_) {}
+
+      const blind = !guarded && d.phase === 'applied' && blindHistory && belowNamed(d.choice, rec.named)
+      if (blind) { d = keepNamed(d, rec.named, 'history_unavailable'); guarded = true }
       settleDecision(R, rec, d)
-      if (d.error === null) installRouteHold(R, c.parsed, t1, d.choice)
+      if (d.error === null && !guarded) installRouteHold(R, c.parsed, t1, d.choice)
       if (LIMIT_AWARE_ENABLED && d.error === null && ['plan', 'credits', 'api'].includes(c.parsed.block?.priced_as)) rec.pricedAs = c.parsed.block.priced_as
       if (d.error !== null) {
         R.iqFails += 1
@@ -2009,6 +2388,7 @@ async function rtCacheStartSave($, start) {
 
 async function rtComplete($, e) {
   if (!RM.ready || e.agentId) return
+  try { await rtTaskComplete($, e) } catch (_) {}
   const n = RM.turnSteps.get(e.turnId) || 0
   RM.turnSteps.delete(e.turnId)
   if (n > 0) R.stats.turns += 1
@@ -2034,8 +2414,15 @@ async function rtComplete($, e) {
   await rtWriteRows($, [rec])
 }
 
-async function rtEnd($, e) {
+async function rtEnd($, e, routingWasOn = R.armed) {
+  if (e?.reason === 'clear') { try { await rtDropTask($, routingWasOn) } catch (_) {}; RM.resumeFacts = null }
   if (e && (e.reason === 'clear' || e.reason === 'resume')) {
+    RM.loadedSid = null
+    RM.task = null
+    RM.bound = null
+    RM.restoredProvenance = null
+    RM.explicitModel = null
+    RM.taskTurns = new Map()
     RM.explicitEffort = null
     usageSession.invalidateReporting()
     if (usageReport) usageReport.dispose()
@@ -2044,6 +2431,7 @@ async function rtEnd($, e) {
     R.armed = false
     RM.requestEpoch += 1
     RM.typedPrompts = []
+    RM.unseenHistory = e.reason === 'resume'
   }
   if (!RM.ready) return
   const open = []
@@ -2268,6 +2656,7 @@ async function rtCommand($, e) {
     return { text: TEXT.off + ' ' + (saved ? 'Keep routing on is turned off on this device.' : 'This session is off, but Keep routing on could not be turned off; use /iq Settings.') }
   }
   if (arg === 'reset') {
+    try { await rtDropTask($) } catch (_) {}
     R.resetNextRoute = true
     clearRouteHold(R)
     return { text: TEXT.reset }

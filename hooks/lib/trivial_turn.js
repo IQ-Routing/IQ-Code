@@ -54,6 +54,11 @@ export function subagentBriefText(text) {
 
 export function withoutInjectedBlocks(t, tags = INJECTED_TAGS) {
   if (typeof t !== 'string') return ''
+  return scanInjected(t, tags).text
+}
+
+
+function scanInjected(t, tags) {
   const pattern = new RegExp('<(/?)(' + tags.join('|') + ')(?=[\\s/>])[^>]{0,256}>', 'gi')
   const stack = []
   let out = '', cursor = 0
@@ -66,7 +71,14 @@ export function withoutInjectedBlocks(t, tags = INJECTED_TAGS) {
     } else if (!/\/\s*>$/.test(match[0])) stack.push(name)
     cursor = match.index + match[0].length
   }
-  return out + (stack.length === 0 ? t.slice(cursor) : '')
+  return { text: out + (stack.length === 0 ? t.slice(cursor) : ''), cut: stack.length > 0 }
+}
+
+
+
+export function subagentBriefCut(text) {
+  if (typeof text !== 'string') return false
+  return scanInjected(text, SUBAGENT_CONTEXT_TAGS).cut || scanInjected(subagentBriefText(text), INJECTED_TAGS).cut
 }
 
 

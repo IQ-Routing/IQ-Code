@@ -1,7 +1,7 @@
 {
   "name": "iq-code",
   "displayName": "IQ Code",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "IQ Code: your Claude Code session with the IQ skin and the waving iQ flag. With routing on, a one-line band shows the model and thinking level in use. The /iq pane holds Home, Routing, Cost, Plan and Settings: measured cost, the prompt cache's countdown and your plan pace. With an IQ key and Personal plan or higher, /iq-route on lets IQ Routing choose each prompt's model and thinking level; your tokens still go straight to Anthropic on your plan. All dollars are API-equivalent.",
   "author": {
     "name": "IQ Routing",

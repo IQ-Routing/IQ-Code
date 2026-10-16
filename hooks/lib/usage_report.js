@@ -1,9 +1,10 @@
 
 import { baseUrl } from './iq_client.js'
+import { VERSION } from './pins.js'
 
 export const USAGE_REPORT_INTERVAL_MS = 60000
 export const USAGE_REPORT_TIMEOUT_MS = 1500
-export const REPORT_CLIENT_VERSIONS = Object.freeze(['1.1.0'])
+export const REPORT_CLIENT_VERSIONS = Object.freeze(['1.1.0', VERSION])
 export const REPORT_RATE_CARDS = Object.freeze(['2026-10-07'])
 export const REPORT_BILLING_MODES = Object.freeze(['api', 'subscription', 'extra_usage', 'cloud_credits', 'unknown'])
 export const REPORT_MODELS = Object.freeze(['claude-fable-5', 'claude-fable-5-1', 'claude-haiku-4-5', 'claude-haiku-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'unknown'])
@@ -68,7 +69,7 @@ const billingCounts = (mode, calls, planCalls, creditCalls) =>
   planCalls === (mode === 'subscription' ? calls : 0) && creditCalls === (creditMode(mode) ? calls : 0)
 
 
-export function validateUsageReport(body, { now = Date.now(), clientVersion = '1.1.0', rateCardVersion = '2026-10-07' } = {}) {
+export function validateUsageReport(body, { now = Date.now(), clientVersion = VERSION, rateCardVersion = '2026-10-07' } = {}) {
   const time = typeof now === 'function' ? now() : now
   if (!finite(time) || !exact(body, ENVELOPE_KEYS) || body.schema_version !== 1 || !versionLabel(body.client_version) || !REPORT_CLIENT_VERSIONS.includes(body.client_version) || body.client_version !== clientVersion || !versionLabel(body.rate_card_version) || !REPORT_RATE_CARDS.includes(body.rate_card_version) || body.rate_card_version !== rateCardVersion) return false
   if (typeof body.reporting_run_id !== 'string' || !UUID4.test(body.reporting_run_id) || !integer(body.sequence, MAX_COUNT) || body.sequence === 0 || !validDay(body.usage_day, time) || typeof body.final !== 'boolean' || !Array.isArray(body.rows) || body.rows.length < 1 || body.rows.length > 64) return false
@@ -145,7 +146,7 @@ function numericFact(f, time) {
 
 
 
-export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { const timer = setTimeout(fn, ms); return { cancel: () => clearTimeout(timer) } }, fetch, eligibility, nonce, clientVersion = '1.1.0', rateCardVersion = '2026-10-07' }) {
+export function newUsageReportClient({ now = Date.now, later = (ms, fn) => { const timer = setTimeout(fn, ms); return { cancel: () => clearTimeout(timer) } }, fetch, eligibility, nonce, clientVersion = VERSION, rateCardVersion = '2026-10-07' }) {
   const makeNonce = () => { const id = typeof nonce === 'function' ? nonce() : nonce; return id === undefined ? randomUuid() : typeof id === 'string' && UUID4.test(id) ? id : null }
   let runId = makeNonce()
   let alive = true; let active = false; let generation = 0; let sequence = 0; let busy = false; let lastSend = null

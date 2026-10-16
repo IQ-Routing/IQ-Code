@@ -1,6 +1,6 @@
 import { VERSION } from './pins.js'
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
-import { withoutInjectedBlocks, subagentBriefText } from './trivial_turn.js'
+import { withoutInjectedBlocks, subagentBriefText, subagentBriefCut, trivialTurn } from './trivial_turn.js'
 
 
 
@@ -47,8 +47,9 @@ export function cleanText(t) {
 }
 
 
+export const CONTEXT_REMOVED = '[Claude Code context removed]'
 function nonemptyPrompt(t) {
-  return cleanText(t) || (typeof t === 'string' && /\S/.test(t) ? '[Claude Code context removed]' : '')
+  return cleanText(t) || (typeof t === 'string' && /\S/.test(t) ? CONTEXT_REMOVED : '')
 }
 
 export function userOrigin(e) {
@@ -118,6 +119,18 @@ function withoutCompleteToolBlocks(text) {
   return out + text.slice(cursor)
 }
 
+
+export function subagentBrief(prompt) {
+  return withoutCompleteToolBlocks(nonemptyPrompt(subagentBriefText(typeof prompt === 'string' ? prompt : '')))
+}
+
+
+
+export function unratableBrief(prompt) {
+  const brief = subagentBrief(prompt)
+  return !/\S/.test(brief) || brief === CONTEXT_REMOVED || trivialTurn(brief) || subagentBriefCut(prompt)
+}
+
 export function buildRouteBody(rows, promptText, secrets, facts) {
   const built = buildEstimateBody(rows, promptText, secrets)
   const routing = { chosen: { ...facts.chosen }, last_served: facts.last_served ? { ...facts.last_served } : null,
@@ -131,7 +144,7 @@ export function buildRouteBody(rows, promptText, secrets, facts) {
     routing.subagent_read_only = facts.subagent_read_only === true
     routing.subagent_rating_opt_in = true
 
-    routing.subagent_brief = scrub(withoutCompleteToolBlocks(nonemptyPrompt(subagentBriefText(facts.subagent_brief || ''))), secrets).slice(0, 16000)
+    routing.subagent_brief = scrub(subagentBrief(facts.subagent_brief || ''), secrets).slice(0, 16000)
   }
   return { body: { ...built.body, contract_version: 2, routing }, sent: built.sent }
 }
@@ -313,6 +326,7 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
     accept: 'application/json',
     authorization: 'Bearer ' + key,
     'x-iq-client': CLIENT_NAME + '/' + version,
+    'x-iq-cc-keep': '1',
     'x-iq-cc-model-explicit': named?.modelExplicit === false ? 'false' : 'true',
     'x-iq-cc-effort-explicit': named?.effortExplicit === true ? 'true' : 'false',
   }
