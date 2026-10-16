@@ -550,6 +550,7 @@ export function register(on, options = {}) {
 
 
   on('turn.step', async function* ($, e, next) {
+    const router = R, runtime = RM
     let begun = { e2: e, startMs: null, rec: null, namedOriginal: { model: e.model, effort: e.effort } }
     try {
       begun = await rtStepBegin($, e)
@@ -567,14 +568,19 @@ export function register(on, options = {}) {
 
     if (begun.e2 !== e) {
       const nowMs = key !== null ? M.nowMs : RM.nowMs
-      const reason = begun.rec?.carry ? carryReason(R, begun.rec.carry, nowMs, begun.carryFingerprint) : null
-      if (reason || R.routingRefused || !rtLive() || statusOf(R, nowMs) !== 'on') {
-        if (reason) { begun.rec.named = { ...begun.namedOriginal }; settleKept(R, begun.rec, reason) }
+      const sameSession = R === router && RM === runtime
+      const reason = begun.rec?.carry ? carryReason(router, begun.rec.carry, nowMs, begun.carryFingerprint) : null
+      if (!sameSession || reason || router.routingRefused || !rtLive() || statusOf(router, nowMs) !== 'on') {
+        if (begun.rec && (begun.rec.sentSteps || begun.rec.steps) === 0) {
+          begun.rec.named = { ...begun.namedOriginal }
+          settleKept(router, begun.rec, reason || 'routing_unavailable')
+        }
         begun.e2 = e
         begun.changed = false
-        if (key !== null) noteStepStart(e, key, nowMs)
+        if (key !== null && sameSession) noteStepStart(e, key, nowMs)
       }
     }
+    if (begun.rec && R === router && RM === runtime) begun.rec.sentSteps = (begun.rec.sentSteps || 0) + 1
     let result
     if (begun.e2 === e) {
       result = yield* next(e)
@@ -596,8 +602,9 @@ export function register(on, options = {}) {
         finished = true
         if (started) throw err
         await rtNoteError($, 'turn.step.rewrite', err)
-        if (begun.rec !== null) settleRefused(R, begun.rec)
+        if (begun.rec !== null) settleRefused(router, begun.rec)
         begun = { e2: e, startMs: begun.startMs, rec: begun.rec, namedOriginal: { model: e.model, effort: e.effort } }
+        if (begun.rec && R === router && RM === runtime) begun.rec.sentSteps = (begun.rec.sentSteps || 0) + 1
         result = yield* next(e)
       } finally {
         if (!finished && stream !== null) {
@@ -609,6 +616,7 @@ export function register(on, options = {}) {
         }
       }
     }
+    if (R !== router || RM !== runtime) return result
     if (key !== null && !M.quiet) {
       try {
         await stepEnd($, begun.e2, key, result, begun)
@@ -1789,8 +1797,11 @@ async function rtStepBegin($, e) {
 
 
 function rtApply(e, rec) {
-  if (e.agentId != null || !rtLive() || rec.phase !== 'applied' || !rec.named || ((RM.modelEpoch || 0) <= (rec.pickEpochs?.model || 0) && e.model !== (rec.requestModel || rec.named.model))) return e
-  if (R.routingRefused || statusOf(R, RM.nowMs) !== 'on') return e
+  if (e.agentId != null || rec.phase !== 'applied' || !rec.named || ((RM.modelEpoch || 0) <= (rec.pickEpochs?.model || 0) && e.model !== (rec.requestModel || rec.named.model))) return e
+  if (!rtLive() || R.routingRefused || statusOf(R, RM.nowMs) !== 'on') {
+    if ((rec.sentSteps || rec.steps) === 0) settleKept(R, rec, 'routing_unavailable')
+    return e
+  }
   const named = { model: e.model, effort: e.effort ?? null }
   let choice = rec.reason === 'carried_forward' ? { ...rec.choice } : applicableChoice(rec.choice, named, rec.explicitEffort)
   const automatic = { ...choice }
@@ -2178,7 +2189,13 @@ async function rtCommand($, e) {
     const router = R, runtime = RM, requestEpoch = RM.requestEpoch
     const current = () => R === router && RM === runtime && RM.requestEpoch === requestEpoch && generation === sessionGeneration && intent === routingIntent
     if (!RM.ready) return { text: TEXT.cardChanged }
-    if (credentials && credentials.configured() && (State.getSetting('authBlocked') === true || credentials.read() === LOGGED_OUT_KEY)) {
+    if (credentials && (State.getSetting('authBlocked') === true || credentials.read() === LOGGED_OUT_KEY)) {
+
+
+
+      const key = await readKey({ ...iqAccess($), configured: () => credentials.read() })
+      if (!current()) return { text: TEXT.off }
+      if (!key) return { text: TEXT.noKey }
       const home = await trustedSettingsHome(iqAccess($))
       if (!home || !(await State.saveSettings({ authBlocked: false }, (text, patch) => writeTrustedSettings(iqAccess($), text, patch), () => generation === sessionGeneration && intent === routingIntent))) {
         return { text: TEXT.off }

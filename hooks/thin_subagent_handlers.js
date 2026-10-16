@@ -6,7 +6,7 @@ import { resolveBase, planSubagent, effortFor, safeSpawnModel, gateSpawn, SUB_TE
 import { buildRouteBody, subagentType, estimateRequest, classifyResponse, destinationFrom, consumeRouteReset, effortSettings } from './lib/iq_client.js'
 import { readKey, trafficOff, readUsageReporting, homeFrom, pathIn, persistPlanRestriction } from './lib/traffic.js'
 import { statusOf, noteRoutingReply, noteRoutingUsage, settlePause, lineFor, continuationIds } from './lib/router.js'
-import { trivialTurn } from './lib/trivial_turn.js'
+import { trivialTurn, subagentBriefText } from './lib/trivial_turn.js'
 import { explicitEffort, explicitModel, guessEffort, defaultEffort, sameModel, supportedEffort, validateAnswer } from './lib/models.js'
 import { subagentDecisionRow, rememberSubagentDecision } from './lib/subagent_decisions.js'
 import { VERSION } from './lib/pins.js'
@@ -166,7 +166,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     }
 
 
-    if ((e.resume?.agentId && continuationIds({ text: e.prompt, context: e.context }).length > 0) || trivialTurn(e.prompt)) {
+    if ((e.resume?.agentId && continuationIds({ text: e.prompt, context: e.context }).length > 0) || trivialTurn(subagentBriefText(e.prompt))) {
       metadata.reason = e.resume?.agentId ? 'resume_continuation' : 'continuation'
       metadata.outcome = 'kept'
       return await next(e)

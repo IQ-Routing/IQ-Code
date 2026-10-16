@@ -180,6 +180,7 @@ export function carryReason(R, pick, nowMs, fingerprint) {
 
 
 export function noteRoutingReply(R, kind, valid = false) {
+  if (!['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind) && !(kind === 'ok' && valid)) return R.routingReply || 0
   R.routingReply = (R.routingReply || 0) + 1
   if (['auth_required', 'plan_required', 'allowance', 'free_quota', 'free_daily'].includes(kind)) R.routingRefused = true
   else if (kind === 'ok' && valid) {
@@ -226,6 +227,7 @@ export function newRecord(R, { nowMs, sessionModel }) {
     local: null,
     decided: false,
     turnId: null,
+    sentSteps: 0,
     steps: 0,
     usage: {},
     usdActual: 0,
@@ -305,6 +307,14 @@ export function fastSubmit(R, nowMs, text, named) {
   return null
 }
 export function settleKept(R, rec, reason) {
+  if (rec.counted && rec.phase === 'applied') {
+    R.counters.routed -= 1
+    R.counters.kept += 1
+    const by = R.counters.byModel
+    by[rec.chosen.model] = (by[rec.chosen.model] || 1) - 1
+    if (by[rec.chosen.model] <= 0) delete by[rec.chosen.model]
+    bump(by, (rec.named || R.named || rec.choice).model)
+  }
   settleNone(R, rec, 'kept', reason)
   rec.localSkipped = true
   rec.tier = 'kept'
@@ -406,6 +416,10 @@ export function settleNone(R, rec, phase, reason, error) {
 
 
 export function settlePause(R, rec, kind, nowMs) {
+  if (!['plan', 'auth', 'allowance', 'free_quota', 'free_daily', ...(LIMIT_AWARE_ENABLED ? ['no_usage'] : [])].includes(kind)) {
+    settleNone(R, rec, kind === 'timeout' ? 'timeout' : 'error', kind === 'timeout' ? 'timeout' : 'error', kind)
+    return
+  }
 
   if (rec.replySequence != null && rec.replySequence !== R.routingReply) {
     settleNone(R, rec, 'paused', 'paused')

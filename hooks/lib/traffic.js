@@ -61,6 +61,7 @@ const SETTINGS_TRANSACTION = `
 const fs = require('node:fs'), path = require('node:path');
 const target = process.argv[1], patch = JSON.parse(process.argv[2]);
 const lock = target + '.lock';
+const reclaim = lock + '.reclaim';
 (async () => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   let fd;
@@ -68,9 +69,18 @@ const lock = target + '.lock';
     try { fd = fs.openSync(lock, 'wx', 0o600); break; }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
+      let reclaiming = false;
       try {
+        // A process can die while holding cleanup. Its marker expires after
+        // thirty seconds; ordinary cleanup holds it only for synchronous I/O.
+        try { if (Date.now() - fs.statSync(reclaim).mtimeMs > 30000) fs.rmdirSync(reclaim); }
+        catch (markerError) { if (markerError.code !== 'ENOENT') throw markerError; }
+        fs.mkdirSync(reclaim); reclaiming = true;
+        // Inspect only after claiming cleanup. Another saver may have replaced
+        // the abandoned lock while this process was waiting for cleanup.
         if (Date.now() - fs.statSync(lock).mtimeMs > 10000) { fs.unlinkSync(lock); continue; }
-      } catch (lockError) { if (lockError.code === 'ENOENT') continue; throw lockError; }
+      } catch (lockError) { if (lockError.code === 'ENOENT') continue; if (lockError.code !== 'EEXIST') throw lockError; }
+      finally { if (reclaiming) { try { fs.rmdirSync(reclaim); } catch (error) { if (error.code !== 'ENOENT') throw error; } } }
       await new Promise(resolve => setTimeout(resolve, 10));
     }
   }
@@ -83,7 +93,7 @@ const lock = target + '.lock';
     if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true;
     if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' };
     const merged = { ...current, ...patch, v: 1 };
-    if (recovered) merged.usageReporting = 'off';
+    if (recovered && patch.usageReporting !== 'on') merged.usageReporting = 'off';
     delete merged.subagentRouting; // session-only: never saved
     fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600 });
     fs.renameSync(temporary, target);
@@ -132,7 +142,7 @@ export async function writeTrustedSettings(access, text, patch) {
 
   if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' }
   const merged = { ...current, ...changes, v: 1 }
-  if (recovered) merged.usageReporting = 'off'
+  if (recovered && changes.usageReporting !== 'on') merged.usageReporting = 'off'
   delete merged.subagentRouting
   await access.write(target, JSON.stringify(merged, null, 1) + '\n')
   return Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))

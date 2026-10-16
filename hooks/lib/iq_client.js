@@ -1,6 +1,6 @@
 import { VERSION } from './pins.js'
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
-import { withoutInjectedBlocks } from './trivial_turn.js'
+import { withoutInjectedBlocks, subagentBriefText } from './trivial_turn.js'
 
 
 
@@ -131,7 +131,7 @@ export function buildRouteBody(rows, promptText, secrets, facts) {
     routing.subagent_read_only = facts.subagent_read_only === true
     routing.subagent_rating_opt_in = true
 
-    routing.subagent_brief = scrub(withoutCompleteToolBlocks(nonemptyPrompt(facts.subagent_brief || '')), secrets).slice(0, 16000)
+    routing.subagent_brief = scrub(withoutCompleteToolBlocks(nonemptyPrompt(subagentBriefText(facts.subagent_brief || ''))), secrets).slice(0, 16000)
   }
   return { body: { ...built.body, contract_version: 2, routing }, sent: built.sent }
 }

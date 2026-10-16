@@ -126,8 +126,8 @@
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 20635,
-      "sha256": "139c70676270f43772c1a7820b6ec10d0602d79952372d09f5d510daa250b9b6"
+      "bytes": 20673,
+      "sha256": "bc5ae8faa05c750fdd6623a80509e9e1eeef989c45b5e10b758e115aadc44a2f"
     },
     {
       "path": "hooks/lib/limit_savings.js",
@@ -201,8 +201,8 @@
     },
     {
       "path": "hooks/lib/router.js",
-      "bytes": 32677,
-      "sha256": "920c7be6f0c85425d76fc7f0e6ed0f72e3db4ca2d976c106124ce6efd351016b"
+      "bytes": 33424,
+      "sha256": "c2e31d4a972f6195e9d69e88f1051f4cda5bb471f3c4e2d4f87afdd82b6a3c53"
     },
     {
       "path": "hooks/lib/runtime_mode.js",
@@ -251,13 +251,13 @@
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 8568,
-      "sha256": "4ff73ac62dc9bfcb0ac87f8f5e73cfe4fdea1ca8ecaf0f629acbd999cf3416d8"
+      "bytes": 9403,
+      "sha256": "c51f6f5410269fd701e7987121c6328968a0c50ffa8526b34d27dbb52fc20e32"
     },
     {
       "path": "hooks/lib/trivial_turn.js",
-      "bytes": 1979,
-      "sha256": "4dfc48c54f0f1c90f77bbae6aaf4ce59168078fc612ca0347d98b867704a3bb6"
+      "bytes": 2891,
+      "sha256": "e5aed325b5f47dfb8a72400b729c889a2ef9eba176d55641332099b7c1fc251a"
     },
     {
       "path": "hooks/lib/ui.js",
@@ -291,8 +291,8 @@
     },
     {
       "path": "hooks/register.js",
-      "bytes": 82833,
-      "sha256": "31b8dd228f659f20031f42a2825100cfab8c8e64eb9ced55cfde37868efd54b4"
+      "bytes": 83609,
+      "sha256": "a71a8fbf5e33c34731087222e2356ac3eace3aa80890724400255badbc83cc09"
     },
     {
       "path": "hooks/route_handlers.js",
@@ -301,8 +301,8 @@
     },
     {
       "path": "hooks/thin_subagent_handlers.js",
-      "bytes": 24053,
-      "sha256": "ff659b5ba847147170005733db7ad4e9f1caff24be199bf66552af0215a044ed"
+      "bytes": 24091,
+      "sha256": "e84280ce1960e52e3826a9442c99ddeea7f28793dc3bad1a4e50174860acebc6"
     },
     {
       "path": "hooks/ui_handlers.js",
