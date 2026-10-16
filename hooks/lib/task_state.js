@@ -24,6 +24,15 @@ const distance = n => Number.isInteger(n) && n >= 0 ? Math.min(n, POLICY.maxProm
 const known = v => v && typeof v === 'object' && !Array.isArray(v)
 export const tierOf = score => score >= 7 ? 'complex' : score >= 4 ? 'medium' : 'simple'
 export function newWork() { return { turns: 0, steps: 0, edits: 0, agents: 0, out: 0, f2: 0, f3: 0, k1: null, k2: null, k3: null, attended: 0, outputTokens: 0 } }
+export function requestFacts(belief = {}, work = {}, { idleS = 0, undo = 0, prompts = 0 } = {}) {
+
+  return { L: Object.hasOwn(belief, 'issuedLevel10') ? belief.issuedLevel10 : belief.origin === 'none' ? null : belief.level10,
+    s: belief.issuedStreak ?? belief.streak ?? 0,
+    i: Math.min(31536000, Math.max(0, Math.floor(idleS))), t: work.turns ?? 0, st: work.steps ?? 0,
+    e: work.edits ?? 0, a: work.agents ?? 0, o: work.out ?? 0, f2: work.f2 ?? 0, f3: work.f3 ?? 0,
+    k1: belief.k1 ?? null, k2: belief.k2 ?? null, k3: belief.k3 ?? null, at: belief.attended ?? 0,
+    u: undo, og: { live: 'l', restored: 'r', seeded: 's', context: 'c', none: 'n' }[belief.origin], pt: prompts }
+}
 export function harmMultiplier(state = {}) {
   const h = POLICY.harm
   return Math.max(1, state.k1 == null ? 1 : h.l1 * 0.5 ** (distance(state.k1) / h.halfLife1), state.k2 == null ? 1 : h.l2 * 0.5 ** (distance(state.k2) / h.halfLife2), state.k3 == null ? 1 : (state.attended === 1 ? h.attendedL3 : h.l3) * 0.5 ** (distance(state.k3) / h.halfLife3))
@@ -162,6 +171,12 @@ function cleanRecord(value) {
     for (const k of ['k1','k2','k3']) { if (b[k] != null && safeInt(b[k], 100000) === undefined) return null; out.belief[k] = b[k] ?? null }
     out.belief.attended = b.attended === 1 ? 1 : 0
     if (safeInt(b.issued) !== undefined) out.belief.issued = b.issued
+    if (Object.hasOwn(b, 'issuedLevel10') || Object.hasOwn(b, 'issuedStreak')) {
+      if (b.issuedLevel10 !== null && (safeInt(b.issuedLevel10, 100) === undefined || b.issuedLevel10 < 10) ||
+          !Object.hasOwn(b, 'issuedLevel10') || safeInt(b.issuedStreak, 16) === undefined) return null
+      out.belief.issuedLevel10 = b.issuedLevel10
+      out.belief.issuedStreak = b.issuedStreak
+    }
   }
   if (value.work != null) { out.work = workRecord(value.work); if (!out.work) return null }
   if (value.named != null) { out.named = choice(value.named); if (!out.named) return null }

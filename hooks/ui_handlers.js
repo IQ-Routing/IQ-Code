@@ -109,10 +109,10 @@ function newUi() {
   }
 }
 
-export function registerUi(on, host) {
+export function registerUi(registerHandler, host) {
   H = host
 
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (!H.ready() || U.quiet) return next(e)
     if (!H.interactive() && !(await ensureInteractive($))) return next(e)
     try {
@@ -123,7 +123,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'Pane', requestId: 'iq' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'Pane', requestId: 'iq' }, async ($, e, next) => {
     try {
       return await drawPane($, e, next)
     } catch (err) {
@@ -132,14 +132,14 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'Pane', requestId: 'feedback' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'Pane', requestId: 'feedback' }, async ($, e, next) => {
     try {
       return drawFeedback($, e, next)
     } catch (_) {
       return next(e)
     }
   })
-  on('ui.render', { component: 'Pane', requestId: 'iq-receipt' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'Pane', requestId: 'iq-receipt' }, async ($, e, next) => {
     if (!SAVINGS_MODES_ENABLED || !U.receipt) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [Text({ children: U.receipt }),
@@ -149,7 +149,7 @@ export function registerUi(on, host) {
       } })] })
   })
 
-  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     try {
       return await drawSpinner($, e, next)
     } catch (err) {
@@ -158,7 +158,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     try {
       return await drawCard($, e, next, 'assistant')
     } catch (err) {
@@ -167,7 +167,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     try {
       return await drawCard($, e, next, 'tool')
     } catch (err) {
@@ -176,7 +176,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     try {
       return await drawCard($, e, next, 'tool')
     } catch (err) {
@@ -185,7 +185,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
     try {
       return await drawTurn($, e, next)
     } catch (err) {
@@ -194,7 +194,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'InfoNotice' }, async ($, e, next) => {
     try {
       return await drawNotice($, e, next)
     } catch (err) {
@@ -203,7 +203,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+  registerHandler('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     try {
       return await drawHint($, e, next)
     } catch (err) {
@@ -212,7 +212,7 @@ export function registerUi(on, host) {
     }
   })
 
-  on('command.run', { command: 'iq' }, async ($, e, next) => {
+  registerHandler('command.run', { command: 'iq' }, async ($, e, next) => {
     if (BROWSER_LOGIN_ENABLED && KEEP_ROUTING_ON_ENABLED && authCommandMatches(e.args)) return next(e)
     if (typeof e.args === 'string' && e.args.trim() === 'feedback') return onFeedback($)
     if (SAVINGS_MODES_ENABLED && typeof e.args === 'string' && e.args.trim().toLowerCase() === 'receipt') return onReceipt($)

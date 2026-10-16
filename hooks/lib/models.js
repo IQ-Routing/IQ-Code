@@ -208,7 +208,10 @@ export function sameChoice(a, b) {
   return a.model === b.model && effortLabel(a.effort) === effortLabel(b.effort)
 }
 
-export const priceId = (id) => canonicalModel(id) === 'claude-haiku-4-5' ? 'claude-haiku-4-5-20251001' : canonicalModel(id)
+export const priceId = (id) => {
+  const model = canonicalModel(id)
+  return model === 'claude-haiku-4-5' ? 'claude-haiku-4-5-20251001' : model
+}
 
 
 export const MAX_THINKING_BUDGET = 32768

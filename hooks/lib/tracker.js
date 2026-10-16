@@ -370,7 +370,8 @@ export function sessionMeter(meter, T) {
   const row = (s) => ({ idx: s.idx, at_ms: s.startMs, usd: s.measured.calls > 0 ? s.measured.paid_usd : s.usd, calls: s.k,
     helper_usd: s.helperUsd, helper_calls: s.helperCalls, unpriced: s.unpriced, advisorUnpriced: s.advisorUnpriced,
     completed: s.completed, estimate: s.lastEstimate ? { ...s.lastEstimate } : null })
-  const prompts = (T.cur ? T.recent.concat([T.cur]) : T.recent).filter((s) => s.human).slice(-PROMPT_HISTORY_CAP).reverse().map(row)
+  const segments = T.cur ? T.recent.concat([T.cur]) : T.recent
+  const prompts = segments.filter((s) => s.human).slice(-PROMPT_HISTORY_CAP).reverse().map(row)
   const last = !T.turnOpen && !T.pending && T.cur && T.cur.human && T.cur.completed ? row(T.cur) : null
   return { ...meter, prompt: meter.prompt ? { ...meter.prompt, measured: T.cur ? measuredSnapshot(T.cur.measured) : null,
     spend_usd: T.cur?.measured.calls > 0 ? T.cur.measured.paid_usd : meter.prompt.spend_usd, helper_usd: T.cur ? T.cur.helperUsd : 0,
@@ -379,7 +380,7 @@ export function sessionMeter(meter, T) {
 
 
     session: { ...meter.session, usd: T.measured.calls > 0 ? T.measured.paid_usd : meter.session?.usd, prompts, last_prompt: last, measured: T.measured.calls > 0 ? { ...measuredSnapshot(T.measured), started_at_ms: T.measuredStartMs, elapsed_ms: T.activeMs, paid_complete: T.measured.paid_complete && !(T.resumed && !T.boot),
-      rows: (T.cur ? T.recent.concat([T.cur]) : T.recent).filter((s) => s.measured.calls > 0).slice(-PROMPT_HISTORY_CAP).reverse()
+      rows: segments.filter((s) => s.measured.calls > 0).slice(-PROMPT_HISTORY_CAP).reverse()
         .map((s) => ({ idx: s.idx, at_ms: s.startMs, completed: s.completed, ...measuredSnapshot(s.measured) })) } : null, unpriced: T.unpriced, advisorUnpriced: T.advisorUnpriced, resumed: T.resumed === true && !T.boot,
       subagents: [...T.subagentTotals.values()].map((s) => ({ ...s })), omitted_subagents: T.omittedSubagents } }
 }

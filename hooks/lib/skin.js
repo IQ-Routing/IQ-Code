@@ -33,7 +33,7 @@ function modeOf(view) {
 }
 
 
-export const PRODUCT_VERSION = '1.1.1'
+export const PRODUCT_VERSION = '1.2.0'
 
 
 export const WORDS = {
@@ -596,10 +596,10 @@ function settingsTab(a) {
   add('plain', ' ')
   if (FORCE_SERVER || s.forecastSource === 'server') {
     add('dim', 'Session cost and pace are measured locally from reported usage. No server forecasts are requested for measured sessions.')
-    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time and token-count facts.')
+    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time, token-count and session-activity-count facts (never commands, file names or output).')
     add('dim', FORCE_SERVER ? BRIEF_NOTE_SWITCH : BRIEF_NOTE)
   } else {
-    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time and token-count facts.')
+    add('dim', 'With routing on, IQ receives the prompt as submitted, including pasted text, and recent submitted prompts after a best-effort scrub and removal of known host context (about 8,000 tokens at most), plus model, effort, elapsed-time, token-count and session-activity-count facts (never commands, file names or output).')
     add('dim', BRIEF_NOTE)
   }
   add('dim', 'IQ may send a short prompt or task excerpt to OpenAI to rate it. Some requests skip this step. See iq-routing.com/privacy for retention and provider terms.')

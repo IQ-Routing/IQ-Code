@@ -1,6 +1,6 @@
 
 
-import { canonicalModel, sameModel, displayModel, familyOf, validateAnswer, capEffort, supportedEffort, applicableChoice, rankOf } from './models.js'
+import { canonicalModel, sameModel, familyOf, validateAnswer, capEffort, supportedEffort, applicableChoice, rankOf } from './models.js'
 const ALIASES = { haiku: 'claude-haiku-4-5', sonnet: 'claude-sonnet-5-5', opus: 'claude-opus-5-5' }
 const HAIKU55 = 'claude-haiku-5-5'
 const HAIKU45 = 'claude-haiku-4-5'
@@ -127,8 +127,6 @@ export function gateSpawn(g, spawn) {
   if (spawn.isTeammate === true) return 'teammate'
   return null
 }
-
-export const describe = (plan) => plan.model ? displayModel(plan.model) : 'your model'
 
 
 export function readOnlyTools(frontMatter) {

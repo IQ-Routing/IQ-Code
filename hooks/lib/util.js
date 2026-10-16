@@ -39,17 +39,6 @@ export function isoOf(ms) {
 }
 
 
-export function errText(err) {
-  let m = ''
-  try {
-    m = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err)
-  } catch (_) {
-    m = 'unprintable error'
-  }
-  return m.replace(/\s+/g, ' ').slice(0, 200)
-}
-
-
 export function tailLines(text, cap) {
   if (text.length <= cap) return text
   const cut = text.slice(text.length - cap)

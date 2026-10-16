@@ -50,7 +50,7 @@ import {
   sessionMeter,
 } from './lib/tracker.js'
 import { measuredSpendLine, estimatedSavingsText, SAVINGS_NOTE, NOTICE, noUsageLine } from './lib/format.js'
-import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, errText, tailLines, mergeRows } from './lib/util.js'
+import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, tailLines, mergeRows } from './lib/util.js'
 import { meterView, noteSeries } from './lib/meterview.js'
 import * as TaskState from './lib/task_state.js'
 import { classify } from './lib/consequence.js'
@@ -61,7 +61,7 @@ import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
 import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, displayText } from './lib/iq_client.js'
 import { readKey, validKey, trafficOff, readUsageReporting, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
-import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
+import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED, TASK_FACTS_ENABLED } from './lib/release_flags.js'
 import { registerAuth, authReset, authEnd, authOff, authCancel } from './auth_handlers.js'
 import { guessEffort, sameModel, sameChoice, canonicalModel, effortFacts, explicitModel, applicableChoice, applyChoice, effortLabel, EFFORTS, validateAnswer } from './lib/models.js'
 import {
@@ -204,7 +204,7 @@ function newRuntime() {
     requestEpoch: 0,
     planProbe: null,
     typedPrompts: [],
-    taskWork: null, taskEdits: new Set(), task: null, taskEpoch: 0, loadedSid: null, seedJob: null, resumeFacts: null, permissionMode: null,
+    taskWork: null, taskEdits: new Set(), task: null, taskEpoch: 0, taskUndos: 0, loadedSid: null, seedJob: null, resumeFacts: null, permissionMode: null,
     taskTurns: new Map(), bound: null, restoredProvenance: null, prompts: 0, downgradeAt: null, lighterPick: null,
     previousPrompt: null, lastTaskMs: 0,
     unseenHistory: false,
@@ -1414,10 +1414,17 @@ async function rtRestoreTask($, sid) {
   runtime.loadedSid = sid
   runtime.task = { level10: 10, streak: 0, origin: 'none', risk: 0 }
   runtime.taskEvidence = false
+  runtime.taskUndos = 0
   runtime.taskWork = TaskState.newWork()
   runtime.taskEdits = new Set()
   runtime.bound = null
   runtime.prompts = 0
+  if (TASK_FACTS_ENABLED) {
+    try {
+      const turns = await $.session.turns()
+      if (Number.isSafeInteger(turns) && turns > 0) runtime.prompts = Math.min(100000, turns)
+    } catch (_) {}
+  }
   runtime.previousPrompt = null
   runtime.lighterPick = null
   const nowMs = await $.clock.now()
@@ -1435,13 +1442,15 @@ async function rtRestoreTask($, sid) {
     router.named = saved.named || null
     router.observedCacheTtlMs = saved.observedCacheTtlMs
     router.compactions = saved.compactions
-    runtime.task = TaskState.fold({ ...saved.belief, origin: 'restored' }, TaskState.newWork(), { idleS: Math.max(0, (nowMs - (saved.updatedMs || saved.last?.endMs || nowMs)) / 1000), completed: false })
+
+    const issued = Object.hasOwn(saved.belief, 'issuedLevel10') ? {} : { issuedLevel10: null, issuedStreak: 0 }
+    runtime.task = TaskState.fold({ ...saved.belief, ...issued, origin: 'restored' }, TaskState.newWork(), { idleS: Math.max(0, (nowMs - (saved.updatedMs || saved.last?.endMs || nowMs)) / 1000), completed: false })
     runtime.taskEvidence = !['none', 'context'].includes(saved.belief.origin)
     runtime.taskWork = saved.work || TaskState.newWork()
     runtime.restoreObservedPending = true
     runtime.bound = saved.bound
     runtime.lighterPick = saved.lighterPick || (saved.last?.routed && belowNamed(saved.last, saved.named) ? { model: saved.last.model, effort: saved.last.effort } : null)
-    runtime.prompts = saved.prompts || 0
+    runtime.prompts = Math.max(runtime.prompts, saved.prompts || 0)
     runtime.restoredProvenance = { ...saved.provenance, model: saved.named?.model, effort: saved.named?.effort }
     runtime.lastTaskMs = nowMs
     rtCrossCheckCache(router, runtime, nowMs)
@@ -1493,6 +1502,7 @@ function rtTaskTier() {
 }
 function rtTaskUndo() {
   if (!RM.task) return
+  RM.taskUndos = Math.min(9, (RM.taskUndos || 0) + 1)
   RM.taskEpoch = (RM.taskEpoch || 0) + 1
   RM.task = TaskState.fold(RM.task, TaskState.newWork(), { undo: 1, completed: false })
   R.task = RM.task
@@ -1515,7 +1525,10 @@ function rtBoundRejects(choice) {
 function rtTaskPrompt(text, nowMs) {
   RM.prompts = Math.min(100000, (RM.prompts || 0) + 1)
   if (RM.task && RM.lastTaskMs) RM.task = TaskState.fold(RM.task, TaskState.newWork(), { idleS: Math.max(0, (nowMs - RM.lastTaskMs) / 1000), completed: false })
-  if (RM.task) for (const key of ['k1', 'k2', 'k3']) if (RM.task[key] != null) RM.task[key] = Math.min(100000, RM.task[key] + 1)
+  if (RM.task) for (const key of ['k1', 'k2', 'k3']) {
+    if (RM.task[key] != null) RM.task[key] = Math.min(100000, RM.task[key] + 1)
+    if (typeof TASK_FACTS_ENABLED !== 'undefined' && TASK_FACTS_ENABLED && RM.taskWork?.[key] != null) RM.taskWork[key] = Math.min(100000, RM.taskWork[key] + 1)
+  }
   const words = new Set((String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || []))
   if (RM.downgradeAt != null && RM.prompts - RM.downgradeAt <= 2) {
     const old = RM.previousPrompt
@@ -1569,6 +1582,7 @@ async function rtTaskComplete($, e) {
   RM.taskEpoch = (RM.taskEpoch || 0) + 1
   const rec = RM.byTurn.get(e.turnId)
   const undo = (rec?.phase === 'applied' && belowNamed(rec.choice, rec.named) || RM.downgradeAt != null && RM.prompts - RM.downgradeAt <= 2) && (e.isAborted || e.reason === 'error' || turn.work.steps === 0)
+  if (undo) RM.taskUndos = Math.min(9, (RM.taskUndos || 0) + 1)
   turn.work.turns = 1
   RM.taskWork ||= TaskState.newWork()
   RM.taskWork.turns = Math.min(64, RM.taskWork.turns + 1)
@@ -1590,6 +1604,7 @@ async function rtDropTask($, allowWrite = R.armed) {
   RM.taskEpoch = (RM.taskEpoch || 0) + 1
   RM.task = { level10: 10, streak: 0, origin: 'none', risk: 0 }
   RM.taskEvidence = false
+  RM.taskUndos = 0
   RM.taskWork = TaskState.newWork()
   RM.taskEdits = new Set()
   RM.bound = null
@@ -1842,6 +1857,7 @@ async function rtSubmit($, e) {
   R.deadlineMs = State.routeDeadline(M.sessionId, await safe($.env.get('IQ_ROUTER_DEADLINE_MS')), nowMs)
   const sessionModel = R.named ? null : await safe($.session.model())
   const rec = newRecord(R, { nowMs, sessionModel })
+  if (typeof TASK_FACTS_ENABLED !== 'undefined' && TASK_FACTS_ENABLED) rec.taskPriorPrompts = RM.prompts || 0
   rec.counted = plan.counted
   if (rec.counted) R.counters.prompts += 1
   const sub = { rec, prev: R.current, runtime: RM, router: R, holdBefore }
@@ -1987,7 +2003,24 @@ async function rtEstimateJob($, rec, text, key, rows, runtime, requestEpoch) {
       if (sendLimits.blocked) return { kind: 'local_no_usage', doneMs: RM.nowMs, latencyMs: 0 }
       built.body.routing.limits = limitsBlock(sendLimits)
     }
-    const req = estimateRequest({ base, key, body: built.body, named, version: RT_VERSION, dev })
+    let taskFacts
+    if (typeof TASK_FACTS_ENABLED !== 'undefined' && TASK_FACTS_ENABLED) {
+      try {
+        if (runtime.task && !Object.hasOwn(runtime.task, 'issuedLevel10')) {
+
+          const work = runtime.taskWork || {}
+          const pendingWork = work.turns > 0 || work.steps > 0 || work.edits > 0 || work.agents > 0 || work.out > 0 || work.f2 > 0 || work.f3 > 0
+          runtime.task.issuedLevel10 = pendingWork || runtime.task.origin === 'none' ? null : runtime.task.level10
+          runtime.task.issuedStreak = pendingWork ? 0 : runtime.task.streak
+        }
+        const idleAt = Math.max(R.last?.endMs ?? runtime.lastTaskMs ?? 0, runtime.task?.issued || 0)
+        taskFacts = TaskState.requestFacts(runtime.task, runtime.taskWork, {
+          idleS: idleAt ? (now - idleAt) / 1000 : 0, undo: runtime.taskUndos || 0,
+          prompts: rec.taskPriorPrompts ?? Math.max(0, (runtime.prompts || 0) - 1),
+        })
+      } catch (_) {}
+    }
+    const req = estimateRequest({ base, key, body: built.body, named, version: RT_VERSION, dev, taskFacts })
     if (req === null) return { kind: 'error', code: 'bad_base', latencyMs: 0, doneMs: RM.nowMs }
     const t0 = await $.clock.now()
     rec.transportStartedMs = t0
@@ -2214,25 +2247,38 @@ async function rtDecide($, rec) {
       let d = decide(R, { nowMs: t1, named: rec.named, est: c.parsed, explicitEffort: rec.explicitEffort })
       let guarded = false
 
-      const blindHistory = historyUnavailable(RM.unseenHistory, rec.sent) &&
+      const serverTask = c.parsed.task?.enforced === true ? c.parsed.task : null
+
+      const blindHistory = serverTask?.enforced !== true && historyUnavailable(RM.unseenHistory, rec.sent) &&
         (!RM.taskEvidence || RM.task?.level10 >= 60 && (rec.taskSigma ?? 0) < 0.5)
       try {
         const task = RM.task
         const score = { simple: 2.5, medium: 5.5, complex: 8.5 }[c.parsed.tier] ?? 5.5
         if (task) {
           const effective = TaskState.effScore(score, task.level10, rec.taskSigma ?? 0)
-          const localKeep = effective + TaskState.margin(task.risk || 0, rec.taskSigma ?? 0, rec.taskRiskWords) >= 7 && c.parsed.block?.task?.enforced !== true
+          const localKeep = effective + TaskState.margin(task.risk || 0, rec.taskSigma ?? 0, rec.taskRiskWords) >= 7 &&
+            (serverTask ? serverTask.enforced !== true : c.parsed.block?.task?.enforced !== true)
           if (d.phase === 'applied' && belowNamed(d.choice, rec.named)) {
             const reason = rec.namedChanged ? 'named_changed' : rtBoundRejects(d.choice) ? 'your_choice' :
               localKeep ? 'task_continuation' : blindHistory ? 'history_unavailable' : null
             if (reason) { d = keepNamed(d, rec.named, reason); guarded = true }
           }
           RM.taskEpoch = (RM.taskEpoch || 0) + 1
-          task.level10 = Math.max(task.level10, score * 10)
+          if (serverTask) {
+            task.level10 = serverTask.level10
+            task.streak = serverTask.streak
+            task.origin = 'live'
+            RM.taskEvidence = true
+          } else task.level10 = Math.max(task.level10, score * 10)
+
+
+          task.issuedLevel10 = c.parsed.task?.level10 ?? task.level10
+          task.issuedStreak = c.parsed.task?.streak ?? task.streak
           task.issued = Math.max(0, Math.floor(t1))
           RM.taskWork = TaskState.newWork()
           RM.taskEdits = new Set()
-          rec.task = { basis: d.reason === 'history_unavailable' ? 'none' : localKeep ? 'task' : 'prompt', level10: Math.round(task.level10), origin: task.origin }
+          RM.taskUndos = 0
+          rec.task = { basis: serverTask?.basis || (d.reason === 'history_unavailable' ? 'none' : localKeep ? 'task' : 'prompt'), level10: Math.round(task.level10), origin: task.origin }
           R.task = task
           if (d.phase === 'applied' && belowNamed(d.choice, rec.named)) { RM.downgradeAt = RM.prompts; RM.lighterPick = { ...d.choice } }
         }

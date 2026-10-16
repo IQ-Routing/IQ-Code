@@ -80,14 +80,11 @@ export function rebuildDebit(pricer, { named, usage, prev, startMs, ttlMs, switc
 
 
 
-
-
-
-
 export function measureCall(pricer, { model, effort = null, named = null, usage, main = false,
   switched = false, rebuildUsd, skipped = false, writeTtl = null, advisorCalls = 0 } = {}) {
   const tokens = measuredTokens(usage, main, writeTtl)
-  const passes = responsePasses(usage, model, advisorCalls)
+  const extras = extraPasses(usage, model)
+  const passes = responsePasses(usage, model, advisorCalls, extras)
   const actual = tokens.missing.length ? { usd: null, missing: [] } : priceClasses(pricer, model, tokens.usage, passes)
   let paidComplete = tokens.missing.length === 0 && actual.usd !== null
   const namedEffortKnown = (typeof named?.effort === 'string' && named.effort.length > 0) || (typeof named?.effort === 'number' && Number.isFinite(named.effort))
@@ -98,7 +95,6 @@ export function measureCall(pricer, { model, effort = null, named = null, usage,
   if (!namedEffortKnown) missing.push('named_effort')
   if (!skipped && penalty === null) missing.push('rebuild_debit_usd')
 
-  const extras = extraPasses(usage, model)
   for (const pass of extras) {
     const t = measuredTokens(pass.usage, false, 300)
     const a = t.missing.length ? { usd: null, missing: t.missing } : priceClasses(pricer, pass.model, t.usage)
@@ -160,8 +156,7 @@ export function measuredSnapshot(ledger) {
 }
 
 
-function responsePasses(usage, model, advisorCalls) {
-  const other = extraPasses(usage, model)
+function responsePasses(usage, model, advisorCalls, other = extraPasses(usage, model)) {
   const own = Array.isArray(usage?.iterations) ? usage.iterations.length - other.length : 1
   return Math.max(1, own, Number.isInteger(advisorCalls) ? advisorCalls + 1 : 1)
 }

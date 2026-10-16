@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pluginId": "iq-code@iq-routing",
-  "productVersion": "1.1.1",
+  "productVersion": "1.2.0",
   "forecastSource": "server",
   "files": [
     {
@@ -12,7 +12,7 @@
     {
       "path": ".claude-plugin/plugin.json",
       "bytes": 971,
-      "sha256": "529ac33d2d9ec3775831795f55e288f8f9330d10f28550bde7e6c48e6e5bbc10"
+      "sha256": "0161defc43dc0ef6753fe1ef69895f05c1403dc59f0f62977ed6b30bfebee16b"
     },
     {
       "path": ".gitattributes",
@@ -46,8 +46,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 17895,
-      "sha256": "667513854c21e922de08d001c475bdb74985c6865b80e2a5ca10c0dc3f1c7045"
+      "bytes": 18311,
+      "sha256": "cc9185027066642742d14483c466db7c7627fd1fff5e116c35d532429cbb46fc"
     },
     {
       "path": "data/logo_frames.json",
@@ -131,8 +131,8 @@
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 21075,
-      "sha256": "0567299d86b90c21c2c5f80a546f338a4c8c32aec776c68b937958badd749c7b"
+      "bytes": 23323,
+      "sha256": "31c0678809093d6e3120006821b19ac2023ac5a58e096058c113cd9b79332d12"
     },
     {
       "path": "hooks/lib/limit_savings.js",
@@ -161,8 +161,8 @@
     },
     {
       "path": "hooks/lib/measured_cost.js",
-      "bytes": 9536,
-      "sha256": "10092f3e82e341667882212efeede37cdc3801ff906e466fbfa872cba60c40a0"
+      "bytes": 9533,
+      "sha256": "f682279317c74323cbd4554331f6573ebc14f69d1d53dfd250b69c2b5815fda9"
     },
     {
       "path": "hooks/lib/meterview.js",
@@ -171,13 +171,13 @@
     },
     {
       "path": "hooks/lib/models.js",
-      "bytes": 9993,
-      "sha256": "21a16f8ef6668ac70f6b303c92bf3c1515da74ac6c3f7395b29d286c75bcf1f7"
+      "bytes": 10015,
+      "sha256": "7d6575cd0611a0e7a24d71878c132583275a7006ce830b12be4f11e8b1859ebd"
     },
     {
       "path": "hooks/lib/pins.js",
       "bytes": 426,
-      "sha256": "88e4341fb4a183ed9cc674fd4cb98cedfd25901de3bd14086e675f88abe9a635"
+      "sha256": "0c96c0e55e8687c9e50f7fa26b9062ab00080e48236530faa083912cdba68aa4"
     },
     {
       "path": "hooks/lib/plan_type.js",
@@ -196,8 +196,8 @@
     },
     {
       "path": "hooks/lib/release_flags.js",
-      "bytes": 137,
-      "sha256": "f1c0598d671f4b7b8e7042ad0acf377a98eae9f60df5efe23276535e07a26cb6"
+      "bytes": 176,
+      "sha256": "61ad167a4042729b64464ab8a8972f9594f3373c38271e99db799cb7f506c1ac"
     },
     {
       "path": "hooks/lib/route_transport.js",
@@ -231,8 +231,8 @@
     },
     {
       "path": "hooks/lib/skin.js",
-      "bytes": 34729,
-      "sha256": "94f2d483d6746236ca7833419da5b43d72876edb0ffbd9002c27363664b30380"
+      "bytes": 34855,
+      "sha256": "ce18385a2552202982343e5b841e60db084a0f7f6c0016aa32e45d6034b816b5"
     },
     {
       "path": "hooks/lib/state.js",
@@ -246,23 +246,23 @@
     },
     {
       "path": "hooks/lib/subagents.js",
-      "bytes": 7034,
-      "sha256": "3cbeff47ca01ba19748510e7903619b7080047fa49f49df337f5cd0cb7f252e1"
+      "bytes": 6932,
+      "sha256": "7731f8fa3ed4e9e4a27fe54b6cc7271e0d2f3f1cecd4b693b85c60e9e654b69e"
     },
     {
       "path": "hooks/lib/task_state.js",
-      "bytes": 15604,
-      "sha256": "6d37595d399aa89bfb57c4e5fa470a51183e5a7431301d30f9f6e81214975076"
+      "bytes": 16692,
+      "sha256": "ec47ca344bbc444f52909e6e7c02616534fd8cba7b72effb4a46cee8b45011fa"
     },
     {
       "path": "hooks/lib/tracker.js",
-      "bytes": 12753,
-      "sha256": "98c7507ae42a896da7b0df69ecdfb0e548e0778a993a443f3bee5655d7d35060"
+      "bytes": 12742,
+      "sha256": "7ba1d16a0dc59621c8a2afe816f7377c17264e4ec5644dbe44c1a5b4163959bd"
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 9403,
-      "sha256": "c51f6f5410269fd701e7987121c6328968a0c50ffa8526b34d27dbb52fc20e32"
+      "bytes": 9583,
+      "sha256": "7d5679f73b242f9de502653bc3b5c28ba235a32312abd19a8812e8c1bb450b2e"
     },
     {
       "path": "hooks/lib/trivial_turn.js",
@@ -291,8 +291,8 @@
     },
     {
       "path": "hooks/lib/util.js",
-      "bytes": 1810,
-      "sha256": "ff9c83482af254f4fed4433c7e05399cdbbebce797083967c841f38bdeb07257"
+      "bytes": 1565,
+      "sha256": "f29a4da466727885294e61d07455361a414cce1eac6bbcf1b37ddc73b04b98bc"
     },
     {
       "path": "hooks/lib/view_model.js",
@@ -301,8 +301,8 @@
     },
     {
       "path": "hooks/register.js",
-      "bytes": 104022,
-      "sha256": "4c8d8da1a9c7bbd88e8fd5b1c5852774a5999d30dea84292d5ae5abdd4221e7d"
+      "bytes": 106364,
+      "sha256": "ce0155012538bfa621177e8695723d60a4e3511f09c87277077a50e3968591d3"
     },
     {
       "path": "hooks/route_handlers.js",
@@ -316,8 +316,8 @@
     },
     {
       "path": "hooks/ui_handlers.js",
-      "bytes": 31066,
-      "sha256": "26df6fd22156c30eae5a2b841a100bdf1b0e0fd75c6fbaa6283a7320d084e27d"
+      "bytes": 31235,
+      "sha256": "c88fa49aed860c4db7e83f6deba9a6288055197185c5d06e4bd7f44e715d0f8d"
     },
     {
       "path": "install.cmd",

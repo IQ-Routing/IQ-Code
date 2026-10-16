@@ -86,6 +86,7 @@ const reclaim = lock + '.reclaim';
   }
   if (fd === undefined) throw Error('settings_lock_busy');
   const temporary = target + '.' + process.pid + '.tmp';
+  let temporaryCreated = false;
   try {
     let current = {}, recovered = false;
     try { current = JSON.parse(fs.readFileSync(target, 'utf8')); }
@@ -95,11 +96,13 @@ const reclaim = lock + '.reclaim';
     const merged = { ...current, ...patch, v: 1 };
     if (recovered && patch.usageReporting !== 'on') merged.usageReporting = 'off';
     delete merged.subagentRouting; // session-only: never saved
-    fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600 });
+    // Never truncate a pre-existing file or follow a planted temporary symlink.
+    fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600, flag: 'wx' });
+    temporaryCreated = true;
     fs.renameSync(temporary, target);
     process.stdout.write(JSON.stringify(Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))));
   } finally {
-    try { fs.unlinkSync(temporary); } catch (_) {}
+    if (temporaryCreated) { try { fs.unlinkSync(temporary); } catch (_) {} }
     fs.closeSync(fd);
     fs.unlinkSync(lock);
   }

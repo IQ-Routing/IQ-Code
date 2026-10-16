@@ -1,5 +1,6 @@
 import { VERSION } from './pins.js'
 import { LIMIT_AWARE_ENABLED } from './usage_flags.js'
+import { TASK_FACTS_ENABLED } from './release_flags.js'
 import { withoutInjectedBlocks, subagentBriefText, subagentBriefCut, trivialTurn } from './trivial_turn.js'
 
 
@@ -315,9 +316,29 @@ export function parseAuthResponse(res, req, action) {
 }
 
 
+export function taskHeader(f) {
+  try {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return null
+    const caps = { L: 100, s: 16, i: 31536000, t: 64, st: 999, e: 999, a: 999, o: 999,
+      f2: 999, f3: 999, k1: 100000, k2: 100000, k3: 100000, at: 1, u: 9, og: null, pt: 100000 }
+    const fields = Object.keys(caps)
+    if (Object.keys(f).length !== fields.length || fields.some(key => !Object.hasOwn(f, key))) return null
+    const parts = ['v1']
+    for (const key of fields) {
+      const value = f[key]
+      if (key === 'og') { if (!['l', 'r', 's', 'c', 'n'].includes(value)) return null }
+      else if (value === null && ['L', 'k1', 'k2', 'k3'].includes(key)) { parts.push(key + '=-'); continue }
+      else if (!Number.isSafeInteger(value) || value < (key === 'L' ? 10 : 0) || value > caps[key]) return null
+      parts.push(key + '=' + value)
+    }
+    return parts.join(';')
+  } catch (_) { return null }
+}
 
 
-export function estimateRequest({ base, key, body, named, version, dev = false }) {
+
+
+export function estimateRequest({ base, key, body, named, version, dev = false, taskFacts }) {
   const b = baseUrl(base, dev)
   if (b === null) return null
   const path = '/claude-code/route'
@@ -326,13 +347,17 @@ export function estimateRequest({ base, key, body, named, version, dev = false }
     accept: 'application/json',
     authorization: 'Bearer ' + key,
     'x-iq-client': CLIENT_NAME + '/' + version,
-    'x-iq-cc-keep': '1',
+    ...(body?.routing?.turn_kind === 'subagent' ? {} : { 'x-iq-cc-keep': '1' }),
     'x-iq-cc-model-explicit': named?.modelExplicit === false ? 'false' : 'true',
     'x-iq-cc-effort-explicit': named?.effortExplicit === true ? 'true' : 'false',
   }
   if (named && typeof named.model === 'string' && named.model !== '') headers['x-iq-cc-named-model'] = canonicalModel(named.model)
   if (named && EFFORTS.includes(named.effort)) {
     headers['x-iq-cc-named-effort'] = named.effort
+  }
+  if (TASK_FACTS_ENABLED && body?.routing?.turn_kind === 'main') {
+    const task = taskHeader(taskFacts)
+    if (task !== null) headers['x-iq-cc-task'] = task
   }
   return { url: b + path, init: { method: 'POST', headers, body: JSON.stringify(body) } }
 }
@@ -363,44 +388,58 @@ const REQUEST_ID = /^[A-Za-z0-9_.:-]{1,80}$/
 export const MAX_ROUTE_HOLD = 32
 export const MAX_ROUTE_HOLD_SECONDS = 60
 
+export function parseTaskBlock(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).length !== 5 || ['v', 'level10', 'streak', 'basis', 'enforced'].some(key => !Object.hasOwn(value, key)) ||
+      value.v !== 1 || !Number.isSafeInteger(value.level10) || value.level10 < 10 || value.level10 > 100 ||
+      !Number.isSafeInteger(value.streak) || value.streak < 0 || value.streak > 16 ||
+      !['prompt', 'task', 'judge_failed', 'compat_judge_failed'].includes(value.basis) || typeof value.enforced !== 'boolean') return null
+  return { v: 1, level10: value.level10, streak: value.streak, basis: value.basis, enforced: value.enforced }
+}
+
+function responseJson(text) {
+  try { return JSON.parse(text) } catch (_) { return null }
+}
+
 
 
 export function parseRoute(text) {
-  let j
-  try {
-    j = JSON.parse(text)
-  } catch (_) {
-    return { ok: false, code: 'malformed' }
-  }
+  return routeFromJson(responseJson(text))
+}
+
+function routeFromJson(j) {
   if (!j || typeof j !== 'object' || Array.isArray(j) || j.object !== 'iq.claude_code_route') return { ok: false, code: 'malformed' }
   const block = j.claude_code && typeof j.claude_code === 'object' && !Array.isArray(j.claude_code) ? j.claude_code : null
   const hold = block && block.v === 2 ? block.hold : null
   const expiry = block && block.v === 2 ? block.hold_expires_in_seconds : null
+  const hasTask = TASK_FACTS_ENABLED && Object.hasOwn(block || {}, 'task')
+  const task = hasTask && block.v === 2 ? parseTaskBlock(block.task) : null
+  if (hasTask && task === null) return { ok: false, code: 'malformed' }
   return {
     ok: true,
     request_id: typeof j.request_id === 'string' && REQUEST_ID.test(j.request_id) ? j.request_id : null,
     tier: tierOf(block && block.tier) || tierOf(block && typeof block.reason_code === 'string' && block.reason_code.replace(/^iq_/, '')),
     block,
+    ...(task ? { task } : {}),
     ...(Object.hasOwn(block || {}, 'hold') ? { hold: Number.isSafeInteger(hold) && hold >= 0 && hold <= MAX_ROUTE_HOLD ? hold : null } : {}),
     ...(Object.hasOwn(block || {}, 'hold_expires_in_seconds') ? { hold_expires_in_seconds: Number.isSafeInteger(expiry) && expiry >= 1 && expiry <= MAX_ROUTE_HOLD_SECONDS ? expiry : null } : {}),
   }
 }
 
 
-function errorCode(text) {
-  try {
-    const j = JSON.parse(text)
-    const c = j && j.error && typeof j.error === 'object' ? j.error.code : j && j.code
-    return typeof c === 'string' ? c : ''
-  } catch (_) {
-    return ''
-  }
+function errorCodeFromJson(j) {
+  const c = j && j.error && typeof j.error === 'object' ? j.error.code : j && j.code
+  return typeof c === 'string' ? c : ''
 }
 
 
 export function routingUsage(text) {
+  return usageFromJson(responseJson(text))
+}
+
+function usageFromJson(j) {
   try {
-    const u = JSON.parse(text).usage
+    const u = j.usage
     if (!u || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(u.month) || !Number.isSafeInteger(u.decisions) || u.decisions < 0 ||
         !Number.isSafeInteger(u.allowance) || u.allowance < 1 || u.decisions > u.allowance) return null
     return { month: u.month, decisions: u.decisions, allowance: u.allowance }
@@ -413,8 +452,10 @@ export function routingUsage(text) {
 export function classifyResponse(res) {
   if (!res || typeof res.status !== 'number') return { kind: 'malformed', code: 'malformed' }
   if (typeof res.text !== 'string' || res.text.length > MAX_RESPONSE_BYTES || new TextEncoder().encode(res.text).length > MAX_RESPONSE_BYTES) return { kind: 'malformed', code: 'response_too_large' }
-  const code = errorCode(res.text)
-  const usage = routingUsage(res.text)
+
+  const body = responseJson(res.text)
+  const code = errorCodeFromJson(body)
+  const usage = usageFromJson(body)
   if (res.status >= 400 && code === FREE_ROUTING.monthlyCode) return { kind: 'free_quota', code, usage }
   if (res.status >= 400 && code === FREE_ROUTING.dailyCode) return { kind: 'free_daily', code, usage }
   if ([401, 403].includes(res.status)) return { kind: 'auth_required', code: 'key_rejected' }
@@ -425,7 +466,7 @@ export function classifyResponse(res) {
     return { kind: 'rate_limited', code: 'http_429' }
   }
   if (res.status >= 200 && res.status < 300) {
-    const p = parseRoute(res.text)
+    const p = routeFromJson(body)
     return p.ok ? { kind: 'ok', parsed: p, code: null, usage } : { kind: 'malformed', code: 'malformed' }
   }
   return { kind: 'http', code: res.status >= 500 ? 'http_5xx' : 'http_' + res.status }
