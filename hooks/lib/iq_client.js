@@ -39,6 +39,9 @@ export const MAX_HISTORY_MESSAGES = 24
 
 export function cleanText(t) {
   if (typeof t !== 'string') return ''
+
+
+  if (!t.includes('>')) return t.trim()
   const raw = withoutInjectedBlocks(t).trim()
   const clean = raw.replace(/<\/?pasted_content(?=[\s/>])[^>]{0,256}>/gi, '').trim()
   const chars = (text) => text.replace(/\s/g, '').length
@@ -403,18 +406,20 @@ function responseJson(text) {
 
 
 
+
 export function parseRoute(text) {
   return routeFromJson(responseJson(text))
 }
 
 function routeFromJson(j) {
   if (!j || typeof j !== 'object' || Array.isArray(j) || j.object !== 'iq.claude_code_route') return { ok: false, code: 'malformed' }
-  const block = j.claude_code && typeof j.claude_code === 'object' && !Array.isArray(j.claude_code) ? j.claude_code : null
+  let block = j.claude_code && typeof j.claude_code === 'object' && !Array.isArray(j.claude_code) ? j.claude_code : null
   const hold = block && block.v === 2 ? block.hold : null
   const expiry = block && block.v === 2 ? block.hold_expires_in_seconds : null
   const hasTask = TASK_FACTS_ENABLED && Object.hasOwn(block || {}, 'task')
   const task = hasTask && block.v === 2 ? parseTaskBlock(block.task) : null
-  if (hasTask && task === null) return { ok: false, code: 'malformed' }
+
+  if (hasTask && task === null) { block = { ...block }; delete block.task }
   return {
     ok: true,
     request_id: typeof j.request_id === 'string' && REQUEST_ID.test(j.request_id) ? j.request_id : null,

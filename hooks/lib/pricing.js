@@ -185,7 +185,9 @@ export function makePricer(card) {
   }
 
 
-  function ratesFor(row, contextTokens) {
+  function ratesFor(row, contextTokens, speed) {
+    row = speed === 'fast' ? row.fast : row
+    if (!row) return null
     const rIn = row.input
     const rOut = row.output
     const rCr = row.cache_read !== null && row.cache_read !== undefined ? row.cache_read : row.input
@@ -225,7 +227,9 @@ export function makePricer(card) {
     const context = inp + cr + cw
     const tokens = { input: inp, output: out, read: cr, write5: w5tokens, write1h: w1tokens }
     if (row === null) return { usd: 0, priced: false, parts: null, tokens, context }
-    const r = ratesFor(row, passes > 1 ? context / passes : context)
+    const r = ratesFor(row, passes > 1 ? context / passes : context, usage?.speed)
+
+    if (!r) return { usd: 0, priced: false, parts: null, tokens, context }
     const parts = {
       input: (inp * r.input) / 1e6,
       output: (out * r.output) / 1e6,
@@ -257,8 +261,9 @@ export function makePricer(card) {
       const at = pass.model === null ? null : resolve(pass.model)
       extra.passes += 1
       if (pass.type === 'advisor_message') extra.advisor += 1
-      if (at === null) extra.unpriced += 1
-      else extra.usd += priceCounters(at.row, pass.usage, false).usd
+      const cost = priceCounters(at === null ? null : at.row, pass.usage, false)
+      if (!cost.priced) extra.unpriced += 1
+      else extra.usd += cost.usd
     }
     return { usd: own.usd, priced: own.priced, key: hit === null ? null : hit.key, parts: own.parts, tokens: own.tokens, context: own.context, extra }
   }

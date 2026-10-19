@@ -5,6 +5,7 @@ import { VERSION } from './pins.js'
 export const USAGE_REPORT_INTERVAL_MS = 60000
 export const USAGE_REPORT_TIMEOUT_MS = 1500
 export const REPORT_CLIENT_VERSIONS = Object.freeze(['1.1.0', VERSION])
+
 export const REPORT_RATE_CARDS = Object.freeze(['2026-10-07'])
 export const REPORT_BILLING_MODES = Object.freeze(['api', 'subscription', 'extra_usage', 'cloud_credits', 'unknown'])
 export const REPORT_MODELS = Object.freeze(['claude-fable-5', 'claude-fable-5-1', 'claude-haiku-4-5', 'claude-haiku-5-5', 'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-sonnet-5-5', 'unknown'])

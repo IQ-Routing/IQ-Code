@@ -38,6 +38,9 @@ export const isHumanKind = (kind) => HUMAN_KINDS.has(kind)
 
 export function newTracker() {
   return {
+    costCalls: [],
+    costSources: new Map(),
+    costSourcesMissing: new Map(),
 
     usd: 0,
     measured: newMeasuredLedger(),
@@ -274,6 +277,10 @@ export function onStepEnd(T, a) {
     seg = (h && h.homeSeg) || T.cur
   } else seg = T.cur
   if (seg === null) seg = startSegment(T, a.nowMs, null)
+  const source = a.agentId || 'main'
+  const binding = T.costSources.get(source)
+  seg = binding?.seg || seg
+  T.costCalls.push({ ...a, source, agentId: a.agentId || null, seg, rec: Object.hasOwn(a, 'rec') ? a.rec : binding?.rec ?? null, transcript: false })
   if (a.measured) {
     addMeasured(T.measured, a.measured)
     addMeasured(seg.measured, a.measured)
@@ -335,6 +342,213 @@ export function onStepEnd(T, a) {
   if (T.lastCallMs !== null && a.nowMs - T.lastCallMs <= ACTIVE_GAP_MS) T.activeMs += Math.max(a.nowMs - T.lastCallMs, 0)
   T.lastCallMs = a.nowMs
   return { counted: true, seg }
+}
+
+
+
+export function getCostSourceCalls(T, source) { return T.costCalls.filter((call) => call.source === source) }
+
+export function getCostCalls(T) {
+
+
+  const sourceStarts = new Map()
+  for (const call of T.costCalls) {
+    const ms = Number.isFinite(call.sourceStartMs) ? call.sourceStartMs : call.nowMs
+    sourceStarts.set(call.source, Math.min(sourceStarts.get(call.source) ?? Infinity, ms ?? Infinity))
+  }
+  const rank = (a, b) => (sourceStarts.get(a.source) - sourceStarts.get(b.source)) ||
+    String(a.sourcePath || a.source).localeCompare(String(b.sourcePath || b.source))
+  const owners = new Map()
+  for (const call of T.costCalls) {
+    if (!call.messageId) continue
+    const owner = owners.get(call.messageId)
+    if (!owner || rank(call, owner) < 0) owners.set(call.messageId, call)
+  }
+  return T.costCalls.filter((call) => !call.messageId || owners.get(call.messageId) === call)
+}
+
+export function getCostMissingScopes(T) {
+  return [...T.costSourcesMissing].map(([source, scope]) => ({ source,
+    segments: [...scope.segments], recs: [...scope.recs], ranges: scope.ranges.slice() }))
+}
+
+export function bindCostSource(T, agentId, { seg = T.cur, rec = null } = {}) {
+  if (!agentId) return null
+  let binding = T.costSources.get(agentId)
+  if (!binding) {
+    binding = { seg, rec }
+    T.costSources.set(agentId, binding)
+  } else {
+    if (!binding.rec && rec) binding.rec = rec
+    if (!binding.seg && seg) binding.seg = seg
+  }
+  return binding
+}
+
+const COST_FIELDS = ['usd', 'ownUsd', 'unpriced', 'advisorUnpriced', 'mainCalls', 'helperCalls', 'helperUsd']
+
+function rebuildCostTotals(T) {
+  const segments = new Set(T.recent.concat(T.cur ? [T.cur] : [], T.costCalls.map((c) => c.seg)).filter(Boolean))
+  for (const seg of segments) {
+    for (const key of COST_FIELDS) seg[key] = 0
+    seg.k = 0
+    seg.measured = newMeasuredLedger()
+    seg.usageIncomplete = false
+  }
+  for (const key of COST_FIELDS) T[key] = 0
+  T.calls = 0
+  T.ownUnpriced = 0
+  T.measured = newMeasuredLedger()
+  T.measuredStartMs = null
+  T.subagentTotals = new Map()
+  T.omittedSubagents = false
+
+  const boot = T.boot
+  if (boot) {
+    T.usd = T.ownUsd = Number(boot.usd) || 0
+    T.calls = Number(boot.calls) || 0
+    T.mainCalls = Number(boot.mainCalls) || 0
+    T.helperCalls = Number(boot.helperCalls) || 0
+    T.unpriced = T.ownUnpriced = Number(boot.unpriced) || 0
+    addMeasured(T.measured, { paid_usd: T.usd, baseline_usd: null, saved_usd: null,
+      rebuild_debit_usd: null, model: 'mixed', effort: null, named_model: null, named_effort: null,
+      usage: {}, complete: false, paid_complete: !T.unpriced, missing: ['historical_baseline'], skipped: true })
+  }
+  for (const call of getCostCalls(T).sort((a, b) => a.nowMs - b.nowMs)) {
+    const seg = call.seg
+    const dollars = Number.isFinite(call.price?.usd) ? call.price.usd : 0
+    const own = Number.isFinite(call.price?.own) ? call.price.own : dollars
+    const partial = !call.price?.priced || call.price.partial === true
+    const advisor = Number.isInteger(call.price?.advisor) && call.price.advisor > 0 ? call.price.advisor : 0
+    T.calls += 1
+    if (seg) seg.k += 1
+    for (const target of seg ? [T, seg] : [T]) {
+      target.usd += dollars
+      target.ownUsd += own
+      target.advisorUnpriced += advisor
+      if (partial) target.unpriced += 1
+      if (call.measured) addMeasured(target.measured, call.measured)
+      if (call.agentId) { target.helperCalls += 1; target.helperUsd += dollars }
+      else target.mainCalls += 1
+    }
+    if (call.measured && (T.measuredStartMs === null || call.nowMs < T.measuredStartMs)) T.measuredStartMs = call.nowMs
+    if (!call.price?.priced) T.ownUnpriced += 1
+    if (call.agentId) {
+      let total = T.subagentTotals.get(call.agentId)
+      if (!total) {
+        if (T.subagentTotals.size >= MAX_HELPERS) {
+          T.subagentTotals.delete(T.subagentTotals.keys().next().value)
+          T.omittedSubagents = true
+        }
+        total = { id: call.agentId, usd: 0, calls: 0, unpriced: 0 }
+        T.subagentTotals.set(call.agentId, total)
+      }
+      total.usd += dollars
+      total.calls += 1
+      if (partial) total.unpriced += 1
+    }
+    if (!seg) continue
+    if (call.usageComplete === false) seg.usageIncomplete = true
+    seg.ctx = call.price?.context ?? seg.ctx
+    seg.anyModelClass = call.modelClass || seg.anyModelClass
+    seg.dirty = true
+    if (call.agentId) {
+      seg.helperModelClass = call.modelClass || seg.helperModelClass
+      if (call.effort !== undefined && call.effort !== null) seg.helperEffortClass = call.effortClass || 'unknown'
+    } else {
+      seg.mainModel = call.model || seg.mainModel
+      seg.mainModelClass = call.modelClass || seg.mainModelClass
+      if (call.effort !== undefined && call.effort !== null) seg.mainEffortClass = call.effortClass || 'unknown'
+    }
+  }
+  if (T.costSourcesMissing.size) {
+    T.measured.paid_complete = false
+    T.measured.complete = false
+    T.measured.saved_usd = null
+    T.measured.baseline_usd = null
+    T.measured.percent = null
+    T.measured.missing = [...new Set(T.measured.missing.concat('transcript_usage'))]
+    for (const scope of T.costSourcesMissing.values()) {
+      for (const home of scope.segments) {
+        home.usageIncomplete = true
+        home.measured.paid_complete = false
+        home.measured.complete = false
+        home.measured.saved_usd = null
+        home.measured.baseline_usd = null
+        home.measured.percent = null
+        home.measured.missing = [...new Set(home.measured.missing.concat('transcript_usage'))]
+      }
+    }
+  }
+}
+
+export function markCostSourceMissing(T, source = 'main', options = {}) {
+  const scope = { segments: new Set(options.segments || []), recs: new Set(options.recs || []), ranges: options.ranges || [] }
+  if (options.seg) scope.segments.add(options.seg)
+  if (options.rec) scope.recs.add(options.rec)
+  const scoped = Object.keys(options).length > 0
+  if (!scoped && source !== 'main') {
+    const binding = T.costSources.get(source)
+    if (binding?.seg) scope.segments.add(binding.seg)
+    else if (T.cur) scope.segments.add(T.cur)
+    if (binding?.rec) scope.recs.add(binding.rec)
+  }
+  const segmentSelectors = new Set(scope.segments), recordSelectors = new Set(scope.recs)
+  for (const call of T.costCalls) {
+    if (call.source !== source) continue
+    const inRange = scope.ranges.some(({ startMs = -Infinity, endMs = Infinity }) => call.nowMs >= startMs && call.nowMs < endMs)
+    const inSegment = !scope.ranges.length && !recordSelectors.size && segmentSelectors.has(call.seg)
+    if (inRange || inSegment || recordSelectors.has(call.rec)) {
+      if (call.seg) scope.segments.add(call.seg)
+      if (call.rec) scope.recs.add(call.rec)
+    }
+  }
+  T.costSourcesMissing.set(source, scope)
+  rebuildCostTotals(T)
+}
+
+export function reconcileCostCalls(T, { source = 'main', agentId = null, calls = [], nowMs, rec = null } = {}) {
+  source = agentId || source
+  if (calls === null) { markCostSourceMissing(T, source); return [] }
+  T.costSourcesMissing.delete(source)
+  const helperId = source === 'main' ? null : (agentId || source)
+  const previous = T.costCalls.filter((c) => c.source === source)
+  const previousByKey = new Map(previous.map(call => [call.key, call]))
+  const binding = helperId ? bindCostSource(T, helperId, { rec }) : null
+  const knownSegments = [...new Set(T.recent.concat(T.cur ? [T.cur] : [], previous.map((c) => c.seg)).filter(Boolean))]
+    .sort((a, b) => a.startMs - b.startMs)
+  const containingSegment = (ms) => {
+    if (!Number.isFinite(ms) || !Number.isFinite(nowMs) || ms > nowMs) return null
+    let lo = 0, hi = knownSegments.length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (knownSegments[mid].startMs <= ms) lo = mid + 1
+      else hi = mid
+    }
+    return knownSegments[lo - 1] || null
+  }
+  const matched = new Set()
+  const replacements = calls.map((call, i) => {
+    const old = call.key ? previousByKey.get(call.key) : previous[i]
+    if (old) matched.add(old)
+    const ms = Number.isFinite(call.ms) ? call.ms : Number.isFinite(call.nowMs) ? call.nowMs : old?.nowMs ?? nowMs
+    const seg = old && Object.hasOwn(old, 'seg') ? old.seg : Object.hasOwn(call, 'seg') ? call.seg :
+      helperId ? binding?.seg ?? null : containingSegment(Number.isFinite(call.ms) ? call.ms : call.nowMs)
+    const record = old && Object.hasOwn(old, 'rec') ? old.rec : Object.hasOwn(call, 'rec') ? call.rec :
+      helperId ? binding?.rec ?? rec : null
+    return { ...old, ...call, source, agentId: helperId,
+      key: call.key || old?.key || `${source}:${i}`,
+      nowMs: ms, seg, rec: record, hasUsage: true, transcript: true }
+  })
+
+
+  const tail = previous.filter(call => !matched.has(call))
+  if (tail.length) T.costSourcesMissing.set(source, {
+    segments: new Set(tail.map((c) => c.seg).filter(Boolean)),
+    recs: new Set(tail.map((c) => c.rec).filter(Boolean)), ranges: [] })
+  T.costCalls = T.costCalls.filter((c) => c.source !== source).concat(replacements, tail)
+  rebuildCostTotals(T)
+  return replacements
 }
 
 

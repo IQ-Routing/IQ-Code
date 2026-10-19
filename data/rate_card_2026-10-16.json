@@ -1,9 +1,9 @@
 {
- "name": "rate_card_2026-10-07",
- "as_of": "2026-10-07",
+ "name": "rate_card_2026-10-16",
+ "as_of": "2026-10-16",
  "unit": "USD per 1,000,000 tokens",
  "card_version": "2026-10",
- "provenance": "API-equivalent prices from provider price sources, as of 2026-10-07.",
+ "provenance": "API-equivalent prices from provider price sources, as of 2026-10-16.",
  "models": {
   "auto": {
    "provider": "openai",
@@ -118,8 +118,15 @@
    "cache_write_1h": 8.0,
    "tier_break_tokens": null,
    "tier_above": null,
-   "read_on": "2026-09-30",
-   "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+   "read_on": "2026-10-16",
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing; https://platform.claude.com/docs/en/build-with-claude/fast-mode",
+   "fast": {
+    "input": 8.0,
+    "output": 40.0,
+    "cache_read": 0.4,
+    "cache_write_5m": 10.0,
+    "cache_write_1h": 16.0
+   }
   },
   "claude-sonnet-5": {
    "provider": "anthropic",

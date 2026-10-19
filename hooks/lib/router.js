@@ -299,7 +299,14 @@ export function newRecord(R, { nowMs, sessionModel }) {
     usage: {},
     usdActual: 0,
     usdNamed: 0,
+    rebuildUsd: 0,
+    savedUsd: 0,
     priced: true,
+    actualPriced: true,
+    namedPriced: true,
+    rebuildPriced: true,
+    unpricedCalls: 0,
+    measuredMissing: [],
     routed: false,
     touched: false,
     done: false,
@@ -697,25 +704,51 @@ export function noteRecStep(rec, { model, usage, pricer, prev, startMs, ttlMs, c
     switched: diverged, writeTtl: writeTtl === undefined ? ttlMs / 1000 : writeTtl, advisorCalls,
     rebuildUsd: rebuildDebit(pricer, { named: rec.named, usage, prev, startMs, ttlMs, switched: diverged, writeTtl: writeTtl === undefined ? ttlMs / 1000 : writeTtl, advisorCalls }),
     skipped: rec.localSkipped || rec.reason === 'trivial_turn' })
-  const row = rec.usage[m] || (rec.usage[m] = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, usd: 0 })
+  const row = rec.usage[m] || (rec.usage[m] = { calls: 0, input: 0, output: 0, cache_read: 0, cache_write: 0, usd: 0, usd_complete: true, unpriced_calls: 0 })
   row.calls += 1
   row.input += measured.usage.input || 0
   row.output += (measured.usage.output || 0) + (measured.usage.thinking || 0)
   row.cache_read += measured.usage.cache_read || 0
   row.cache_write += (measured.usage.cache_write_5m || 0) + (measured.usage.cache_write_1h || 0)
-  row.usd += measured.paid_usd || 0
+  const paidKnown = typeof measured.paid_usd === 'number' && Number.isFinite(measured.paid_usd) && measured.paid_usd >= 0
+  const paidComplete = paidKnown && (measured.paid_complete ?? measured.complete) !== false
+  if (paidKnown) row.usd += measured.paid_usd
+  else row.usd_unavailable = true
+  if (!paidComplete) {
+    row.usd_complete = false
+    row.unpriced_calls = (row.unpriced_calls || 0) + 1
+    rec.actualPriced = false
+    rec.unpricedCalls = (rec.unpricedCalls || 0) + 1
+  }
   rec.measured = measured
-  if (measured.paid_usd !== null) rec.usdActual += measured.paid_usd
-  if (measured.baseline_usd !== null) rec.usdNamed += measured.baseline_usd
+  if (paidKnown) rec.usdActual += measured.paid_usd
+  if (typeof measured.baseline_usd === 'number' && Number.isFinite(measured.baseline_usd)) rec.usdNamed += measured.baseline_usd
+  else rec.namedPriced = false
+
+
+  if (measured.advisor_unpriced > 0 || measured.missing?.includes('extra_pass')) rec.namedPriced = false
   if (typeof measured.rebuild_debit_usd === 'number' && Number.isFinite(measured.rebuild_debit_usd)) {
     rec.rebuildUsd = (rec.rebuildUsd || 0) + measured.rebuild_debit_usd
     if (measured.rebuild_debit_usd > 0 && rec.userOverride !== true) rec.touched = true
-  }
-  if (!measured.complete) rec.priced = false
+  } else rec.rebuildPriced = false
+  rec.measuredMissing = [...new Set((rec.measuredMissing || []).concat(measured.missing || []))]
+
+
+  if (measured.savings_excluded) rec.savingsExcludedCalls = (rec.savingsExcludedCalls || 0) + 1
+  else if (!measured.complete) rec.priced = false
   if (typeof measured.saved_usd === 'number' && Number.isFinite(measured.saved_usd)) {
     rec.savedUsd = (rec.savedUsd || 0) + measured.saved_usd
   }
   return { actualUsd: measured.paid_usd, namedUsd: measured.baseline_usd }
+}
+
+
+
+export function replaceRecMeasurements(rec, entries) {
+  Object.assign(rec, { steps: 0, usage: {}, usdActual: 0, usdNamed: 0, rebuildUsd: 0, savedUsd: 0,
+    priced: true, actualPriced: true, namedPriced: true, rebuildPriced: true, unpricedCalls: 0, savingsExcludedCalls: 0, measuredMissing: [] })
+  rec.measured = null
+  for (const entry of entries) noteRecStep(rec, entry)
 }
 
 
@@ -820,10 +853,17 @@ export function decisionRow(R, rec, { nowMs, sessionId }) {
     ...(rec.task ? { task: { basis: rec.task.basis, level10: rec.task.level10, origin: rec.task.origin } } : {}),
     ...(rec.escalated ? { escalated: { at_step: rec.escalated.at_step, why: rec.escalated.why } } : {}),
     steps: rec.steps,
-    usage: Object.fromEntries(Object.entries(rec.usage).map(([k, v]) => [k, { ...v, usd: r6(v.usd) }])),
-    usd_actual: rec.priced ? r6(rec.usdActual) : null,
-    usd_named: rec.priced ? r6(rec.usdNamed) : null,
-    rebuild_debit_usd: rec.priced ? r6(rec.rebuildUsd || 0) : null,
+    usage: Object.fromEntries(Object.entries(rec.usage).map(([k, v]) => [k, { ...v,
+      usd: v.usd_unavailable === true ? null : r6(v.usd),
+      ...(v.usd_complete === false ? { usd_floor: r6(v.usd) } : {}) }])),
+    usd_actual: (rec.actualPriced ?? rec.priced) ? r6(rec.usdActual) : null,
+    usd_actual_complete: (rec.actualPriced ?? rec.priced) === true,
+    ...((rec.actualPriced ?? rec.priced) === false ? { usd_actual_floor: r6(rec.usdActual) } : {}),
+    usd_named: (rec.namedPriced ?? rec.priced) ? r6(rec.usdNamed) : null,
+    rebuild_debit_usd: (rec.rebuildPriced ?? rec.priced) ? r6(rec.rebuildUsd || 0) : null,
+    unpriced_calls: rec.unpricedCalls || 0,
+    ...(rec.savingsExcludedCalls ? { savings_excluded_calls: rec.savingsExcludedCalls } : {}),
+    missing: rec.measuredMissing || [],
     est_saved_usd: r6(recSaving(rec)),
   }
 }

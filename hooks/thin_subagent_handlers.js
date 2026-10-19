@@ -3,7 +3,7 @@
 import * as State from './lib/state.js'
 import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { resolveBase, planSubagent, effortFor, safeSpawnModel, gateSpawn, SUB_TEXT, readOnlyTools, readAliasHost } from './lib/subagents.js'
-import { buildRouteBody, subagentType, estimateRequest, classifyResponse, destinationFrom, consumeRouteReset, effortSettings, unratableBrief } from './lib/iq_client.js'
+import { buildRouteBody, subagentType, estimateRequest, classifyResponse, destinationFrom, consumeRouteReset, effortSettings, unratableBrief, displayText } from './lib/iq_client.js'
 import { readKey, trafficOff, readUsageReporting, homeFrom, pathIn, persistPlanRestriction } from './lib/traffic.js'
 import { statusOf, noteRoutingReply, noteRoutingUsage, settlePause, lineFor, continuationIds } from './lib/router.js'
 import { explicitEffort, explicitModel, guessEffort, defaultEffort, sameModel, supportedEffort, validateAnswer } from './lib/models.js'
@@ -25,6 +25,15 @@ function limitAccess($) {
     },
     usage: () => $.session.usage(),
     now: () => $.clock.now(),
+  }
+}
+
+function fastAccess($, ctx) {
+  return {
+    note: (text) => {
+      if (!ctx.getM().interactive) return
+      try { void safe($.ui.log(displayText(text))) } catch (_) {}
+    },
   }
 }
 
@@ -115,6 +124,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       const killed = await trafficOff(iqAccess($, ctx))
       const nowMs = await $.clock.now()
       const current = ctx.getR()
+      if (ctx.fastMode && await ctx.fastMode(fastAccess($, ctx))) return 'fast_mode'
       if (!enabled() || !subagentsOn()) return 'subagents off'
       if (current !== router || plannedAgents !== agents) return 'session_changed'
       if (killed) return 'killed'
@@ -136,6 +146,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       return next(e)
     }
     try {
+    if (ctx.fastMode && await ctx.fastMode(fastAccess($, ctx))) return await keep('fast_mode')
     if (!subagentsOn()) return await keep('subagents off')
     const submitMs = await $.clock.now()
     if (LIMIT_AWARE_ENABLED && ctx.refreshLimits) await ctx.refreshLimits(limitAccess($))
@@ -181,6 +192,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
 
 
     let modelExplicit = true
+    let definitionEffort = null
     let base = e.resume?.agentId && agents.get(e.resume.agentId)?.plan.model || await resolve(e.model)
     let readOnly = String(e.subagentType).toLowerCase() === 'explore'
     const cwd = await safe($.session.cwd())
@@ -196,6 +208,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
           readOnly = readOnlyTools(fm[1])
           const modelLine = /^model:\s*([^\n]*)/m.exec(fm[1])
           const model = modelLine && /^['"]?([A-Za-z0-9._\[\]-]+)['"]?\s*(?:#.*)?$/.exec(modelLine[1])
+          const effortLine = /^effort:\s*['"]?(low|medium|high|xhigh|max)['"]?\s*(?:#.*)?$/m.exec(fm[1])
+          if (effortLine) definitionEffort = effortLine[1]
           if (!e.resume && !ownModel) {
             if (!modelLine || model && model[1].toLowerCase() === 'inherit') modelExplicit = false
             else if (model) base = await resolve(model[1])
@@ -211,8 +225,9 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     for (const source of ['policy', 'flag', 'local', 'project', 'user']) sources[source] = effortSettings(await safe($.settings.read({ source })))
     modelExplicit = modelExplicit || explicitModel({ env: await safe($.env.get('ANTHROPIC_MODEL')), sources, startupModel: e.parentModel, resolveModel: value => resolveBase(value, e.parentModel, host) }) !== null || r.named?.modelExplicit === true
     const effortEnv = await safe($.env.get('CLAUDE_CODE_EFFORT_LEVEL'))
-    const configured = explicitEffort({ model: base, env: effortEnv, sources })
-    const effort = guessEffort({ model: base, env: effortEnv, sources }) ?? defaultEffort(base)
+    const ownEffort = definitionEffort
+    const configured = ownEffort ?? explicitEffort({ model: base, env: effortEnv, sources })
+    const effort = ownEffort ?? guessEffort({ model: base, env: effortEnv, sources }) ?? defaultEffort(base)
     metadata.named = { model: base, effort }
     const effortExplicit = configured !== null
 
@@ -340,6 +355,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
 
     const changed = !e.resume && plan.action !== 'keep'
     const input = changed ? { ...e, model: safeSpawnModel(plan.model, host) } : e
+    if (ctx.fastMode && await ctx.fastMode(fastAccess($, ctx))) return await keep('fast_mode')
     let result
     let accepted = plan
     try {
@@ -359,8 +375,8 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
       const actualModel = resolveBase(result.model || (e.resume ? base : changed ? plan.model : input.model), e.parentModel, host)
       let startingEffort = effort
       if (e.resume) {
-        startingEffort = guessEffort({ model: actualModel, env: effortEnv, sources }) ?? defaultEffort(actualModel)
-        const ownExplicit = explicitEffort({ model: actualModel, env: effortEnv, sources })
+        startingEffort = ownEffort ?? guessEffort({ model: actualModel, env: effortEnv, sources }) ?? defaultEffort(actualModel)
+        const ownExplicit = ownEffort ?? explicitEffort({ model: actualModel, env: effortEnv, sources })
         metadata.named = { model: actualModel, effort: startingEffort }
         accepted = planSubagent({ base: { model: actualModel, effort: startingEffort, modelExplicit },
           answer: validAnswer.ok ? { ...safeAnswer, model: actualModel } : null, explicitEffort: ownExplicit })
@@ -407,6 +423,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
     if (!agent) return yield* next(e)
     activate(e.agentId, agent)
     if (!enabled() || !subagentsOn()) return yield* next(e)
+    if (ctx.fastMode && await ctx.fastMode(fastAccess($, ctx))) return yield* next(e)
     const expected = ctx.getR()
     const expectedAgents = agents
     const killed = await trafficOff(iqAccess($, ctx))
@@ -418,6 +435,7 @@ export function registerThinSubagents(registerHook, ctx, enabled) {
         LIMIT_AWARE_ENABLED && ctx.noUsage && ctx.noUsage(nowMs)) return yield* next(e)
     const effort = effortFor(agent.plan, e.effort)
     if (effort === undefined) return yield* next(e)
+    if (ctx.fastMode && await ctx.fastMode(fastAccess($, ctx))) return yield* next(e)
     let streamed = false
     try {
       const stream = next({ ...e, effort })

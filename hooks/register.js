@@ -37,6 +37,7 @@ import { SUB_TEXT, readAliasHost, resolveBase } from './lib/subagents.js'
 import { makePricer, booked, advisorCallsIn, mainPass, latestCacheWriteTtlMs, modelClass, effortClass } from './lib/pricing.js'
 import {
   newTracker,
+  bindCostSource, getCostCalls, getCostSourceCalls, getCostMissingScopes, reconcileCostCalls, markCostSourceMissing,
   noteSubmit,
   fillSubmit,
   dropPending,
@@ -56,6 +57,7 @@ import * as TaskState from './lib/task_state.js'
 import { classify } from './lib/consequence.js'
 import { trivialTurn } from './lib/trivial_turn.js'
 import { measureCall, rebuildDebit } from './lib/measured_cost.js'
+import { readTranscriptUsage } from './lib/transcript_usage.js'
 import { routeFetch } from './lib/route_transport.js'
 import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
@@ -103,6 +105,7 @@ import {
   noteMainStep,
   noteCompaction,
   noteRecStep,
+  replaceRecMeasurements, recSaving,
   noteTurnDone,
   savedCacheStart,
   cacheStartText,
@@ -124,6 +127,7 @@ import {
 import { registerRoute, cancelRouteWork } from './route_handlers.js'
 import { measureTaskBudget } from './route_handlers.js'
 import { newSettingsClient } from './lib/session_defaults.js'
+import { newFastMode, observeFastMode, resolveFastSettings, FAST_NOTE } from './lib/fast_mode.js'
 
 const PANE = 'iq'
 
@@ -145,6 +149,16 @@ function iqAccess($) {
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'),
     disabled: () => $.env.get('IQ_ROUTER_DISABLED'),
     blocked: () => State.getSetting('authBlocked') === true,
+  }
+}
+
+function fastAccess($) {
+  return {
+    readSettings: (source) => $.settings.read({ source }),
+    disabled: () => $.env.get('CLAUDE_CODE_DISABLE_FAST_MODE'),
+    readMainModel: () => $.session.model(),
+    run: (argv, options) => $.process.run(argv, options),
+    note: (text) => say($, text),
   }
 }
 
@@ -178,6 +192,10 @@ function newMeter() {
     epoch: 0,
     boot: 'idle',
     bootAsOf: 0,
+    costTranscriptPath: null,
+    costTranscriptFiles: new Map(),
+    lastMainReply: null,
+    costReadChain: Promise.resolve(),
     effortTried: false,
     interactive: false,
     endReason: null,
@@ -190,6 +208,7 @@ function newMeter() {
 
 function newRuntime() {
   return {
+    fastMode: null,
     ready: false,
     pricer: null,
     root: null,
@@ -401,6 +420,7 @@ async function usageStep($, e, result, begun, pricing) {
     helper.prev = { ctx: row ? row.usage.input + row.usage.cache_read + row.usage.cache_write_5m + row.usage.cache_write_1h : 0, startMs: begun.startMs, endMs: at, routed: helper.routed }
 
   }
+  if (row?.savings_excluded) helperEligible = false
   if (!u) { usageNoUsagePause = true; usageSession.invalidateReporting() }
   else usageNoUsagePause = false
   const session = usageSession
@@ -441,7 +461,7 @@ export function register(on, options = {}) {
   pluginKey = () => State.getSetting('authBlocked') === true ? LOGGED_OUT_KEY : credentials.read()
 
   registerRoute(on, { getR: () => R, getRM: () => RM, getM: () => M, getT: () => T, pluginKey,
-    limitState: currentLimits, refreshLimits: refreshLimitFacts, noUsage, noteNoUsage,
+    limitState: currentLimits, refreshLimits: refreshLimitFacts, noUsage, noteNoUsage, fastMode: rtFastMode,
     noteUsageEntitlement: (key, paid) => usageEntitlement(key, paid),
     writeSubagentDecision: (row, access) => rtAppendRows(access, [row], Date.parse(row.ts)),
     noteHelperPlan: (id, plan) => { if (SAVINGS_MODES_ENABLED || USAGE_REPORTS_ENABLED) { usageHelpers.set(id, { ...plan, prev: null }); if (usageHelpers.size > 128) usageHelpers.delete(usageHelpers.keys().next().value) } },
@@ -486,6 +506,7 @@ export function register(on, options = {}) {
   on('classic.SessionStart', async ($, e, next) => {
     const result = await next(e)
     try {
+      if (typeof e.transcript_path === 'string') M.costTranscriptPath = e.transcript_path
       RM.permissionMode = typeof e.permission_mode === 'string' ? e.permission_mode : RM.permissionMode
       if (e.source === 'resume' || e.source === 'fork') {
         RM.unseenHistory = true
@@ -560,6 +581,19 @@ export function register(on, options = {}) {
     return result
   })
 
+
+  on('agent.spawn', { subagentType: /./ }, async ($, e, next) => {
+    let home = null
+    try { home = { tracker: T, router: R, seg: T.cur, rec: R.current } } catch (_) {}
+    const result = await next(e)
+    try {
+      if (home && home.tracker === T && home.router === R && result?.agentId && !result.deny) {
+        bindCostSource(T, result.agentId, { seg: home.seg, rec: home.rec })
+      }
+    } catch (_) {}
+    return result
+  })
+
   on('turn.start', async ($, e, next) => {
     if (M.ready && !M.quiet) {
       try {
@@ -601,6 +635,14 @@ export function register(on, options = {}) {
       }
     }
 
+    if (await rtFastMode(fastAccess($))) {
+      if (begun.rec) settleKept(router, begun.rec, 'fast_mode')
+      begun.e2 = e
+      begun.fastMode = true
+      begun.changed = false
+      if (key !== null) noteStepStart(begun.e2, key, book.meter.nowMs, book)
+    }
+
     if (begun.e2 !== e) {
       const nowMs = key !== null ? book.meter.nowMs : runtime.nowMs
       const sameSession = R === router && RM === runtime
@@ -618,7 +660,7 @@ export function register(on, options = {}) {
     if (begun.rec && R === router && RM === runtime) begun.rec.sentSteps = (begun.rec.sentSteps || 0) + 1
     let result
     if (begun.e2 === e) {
-      result = yield* next(e)
+      result = yield* next(begun.e2)
     } else {
       let started = false
       let finished = false
@@ -689,6 +731,7 @@ export function register(on, options = {}) {
     }
     const result = await next(e)
     try {
+      if (!e.agentId) await syncCostTranscript($, M.costTranscriptPath)
       await rtComplete($, e)
     } catch (err) {
       await rtNoteError($, 'turn.complete', err)
@@ -706,6 +749,17 @@ export function register(on, options = {}) {
 
     const inner = result && typeof result.text === 'string' && result.text !== e.answer && result.text !== '' ? result.text + '\n' : ''
     return { ...result, text: inner + line }
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    const result = await next(e)
+    await syncCostTranscript($, e.transcript_path || M.costTranscriptPath)
+    return result
+  })
+  on('classic.SubagentStop', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agent_id) await syncCostTranscript($, e.agent_transcript_path, e.agent_id)
+    return result
   })
 
 
@@ -933,6 +987,7 @@ export function register(on, options = {}) {
 async function startMeter($, e) {
   M = newMeter()
   T = newTracker()
+  M.costTranscriptPath = typeof e?.transcript_path === 'string' ? e.transcript_path : typeof e?.transcriptPath === 'string' ? e.transcriptPath : null
   M.interactive = !!(e && e.isInteractive === true)
   if (!M.interactive) await ensureInteractive($)
   M.root = $.plugin.root
@@ -1113,6 +1168,11 @@ function noteNewSession() {
 function resetForNewSession(sid) {
   T = newTracker()
   M.sessionId = sid
+  M.bootAsOf = M.nowMs
+  M.costTranscriptPath = null
+  M.costTranscriptFiles = new Map()
+  M.lastMainReply = null
+  M.costReadChain = Promise.resolve()
   M.epoch += 1
   M.readEpoch += 1
   M.read = { state: 'idle', data: null, note: '' }
@@ -1161,20 +1221,218 @@ async function stepEnd($, e, key, result, begun = {}, book = { tracker: T, meter
   const mainCtx = u && !e.agentId ? mainPass(u, model, advisorCalls).ctx : undefined
 
   const helper = e.agentId && helpers.get(e.agentId)
-  const named = helper ? { model: helper.model, effort: helper.effort } : begun.rec?.named || begun.namedOriginal || { model: e.model, effort: e.effort }
-  const skipped = !!(begun.rec?.localSkipped || begun.rec?.reason === 'trivial_turn' || (!begun.rec && !router.last?.routed))
-  const switched = helper ? !!(helper.routed || helper.prev?.routed) : !e.agentId && !skipped && !!(begun.changed || router.last?.routed)
+  const named = u?.speed === 'fast' ? { model, effort: e.effort } : helper ? { model: helper.model, effort: helper.effort } : begun.rec?.named || begun.namedOriginal || { model: e.model, effort: e.effort }
+  const skipped = u?.speed === 'fast' || begun.fastMode === true || !!(begun.rec?.localSkipped || begun.rec?.reason === 'trivial_turn' || (!begun.rec && !router.last?.routed))
+  const switched = u?.speed === 'fast' ? false : helper ? !!(helper.routed || helper.prev?.routed) : !e.agentId && !skipped && !!(begun.changed || router.last?.routed)
   const settingsTtl = ttlIsKnown(runtime.ttl || {}, meter.usage?.rateLimits) ? cacheTtlMs({ ...(runtime.ttl || {}), onSubscription: onSubscription(meter.usage?.rateLimits, nowMs) }) : null
   const writeTtl = e.agentId ? 300 : (latestCacheWriteTtlMs(u, model) ?? router.observedCacheTtlMs ?? settingsTtl ?? (router.ttlKnown ? router.ttlMs : null)) / 1000 || null
   const rebuildUsd = rebuildDebit(meter.pricer, { named, usage: u, prev: e.agentId ? helper?.prev : router.last,
     startMs: begun.startMs ?? nowMs, ttlMs: router.last?.ttlMs ?? (router.ttlKnown ? router.ttlMs : 3600000), switched, writeTtl, advisorCalls })
-  const measured = u ? measureCall(meter.pricer, { model, effort: e.effort, named, usage: u,
-    main: !e.agentId, advisorCalls, writeTtl, switched, rebuildUsd, skipped: e.agentId ? !switched : skipped }) : null
+  const measureOptions = { model, effort: e.effort, named, main: !e.agentId, advisorCalls, writeTtl, switched,
+    excludeSavings: !!e.agentId && !(typeof named.effort === 'string' && named.effort.length || Number.isFinite(named.effort)),
+    rebuildUsd, skipped: e.agentId ? !switched : skipped, prev: e.agentId ? helper?.prev : router.last,
+    startMs: begun.startMs ?? nowMs, ttlMs: router.last?.ttlMs ?? (router.ttlKnown ? router.ttlMs : 3600000) }
+  const measured = u ? measureCall(meter.pricer, { ...measureOptions, usage: u }) : null
   begun.measured = measured
-  onStepEnd(tracker, { key, agentId: e.agentId, model, effort: e.effort, hasUsage: price !== null, price, measured, mainCtx, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
+  onStepEnd(tracker, { key, agentId: e.agentId, rec: begun.rec, usage: u, measureOptions, model, effort: e.effort, hasUsage: price !== null, price, measured, mainCtx, nowMs, modelClass: modelClass(model), effortClass: effortClass(e.effort),
     usageComplete: !!u && ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].every((k) => Number.isSafeInteger(u[k]) && u[k] >= 0) })
   if (tracker.cur && tracker.cur.human) noteSeries(meter.series, tracker.cur.idx, tracker.cur.usd)
   $.ui.invalidate('ui.render')
+}
+
+
+
+async function syncCostTranscript($, path, agentId = null) {
+  if (!M.ready || M.quiet) return
+  const tracker = T, meter = M, router = R, homeSeg = T.cur, readAtMs = M.nowMs
+  const source = agentId || 'main'
+  const run = async () => {
+    if (tracker !== T || meter !== M || router !== R) return
+    const existing = getCostSourceCalls(tracker, source)
+    const binding = agentId ? tracker.costSources.get(source) : null
+    const latest = existing.slice().reverse().find(c => c.seg === homeSeg)
+    const currentScope = { seg: binding?.seg || homeSeg, rec: agentId ? binding?.rec : latest?.rec,
+      ranges: [{ startMs: latest?.measureOptions?.startMs ?? homeSeg?.startMs ?? readAtMs, endMs: readAtMs + 1 }] }
+    const applyRecords = (before) => {
+      const byRec = new Map([...before.keys()].map(rec => [rec, []]))
+      for (const c of getCostCalls(tracker)) {
+        if (!c.rec || !c.measured) continue
+        const list = byRec.get(c.rec) || []
+        list.push({ model: c.model, usage: c.usage, pricer: meter.pricer, measured: c.measured })
+        byRec.set(c.rec, list)
+      }
+      const missing = new Set(getCostMissingScopes(tracker).flatMap(scope => scope.recs))
+      for (const [rec, entries] of byRec) {
+        replaceRecMeasurements(rec, entries)
+        if (missing.has(rec)) {
+          rec.actualPriced = false; rec.priced = false
+          rec.measuredMissing = [...new Set(rec.measuredMissing.concat('transcript_usage'))]
+        }
+        if (rec.done && (rec.counted || rec.reason === 'carried_forward' || recSaving(rec) < 0)) {
+          router.counters.savedUsd = (router.counters.savedUsd || 0) - (before.get(rec) || 0) + (recSaving(rec) || 0)
+        }
+      }
+    }
+    const before = new Map(getCostCalls(tracker).filter(c => c.rec).map(c => [c.rec, recSaving(c.rec)]))
+    const missingCurrent = () => {
+      const retained = getCostMissingScopes(tracker).find(scope => scope.source === source)
+      markCostSourceMissing(tracker, source, { ...currentScope,
+        segments: retained?.segments || [], recs: retained?.recs || [],
+        ranges: (retained?.ranges || []).concat(currentScope.ranges) })
+      if (currentScope.rec && !before.has(currentScope.rec)) before.set(currentScope.rec, recSaving(currentScope.rec))
+      applyRecords(before)
+    }
+    if (typeof path !== 'string' || !path.endsWith('.jsonl')) {
+      if (agentId) missingCurrent()
+      return
+    }
+    try {
+      const files = meter.costTranscriptFiles || (meter.costTranscriptFiles = new Map())
+      const read = await readTranscriptUsage({ run: (argv, options) => $.process.run(argv, options) }, path,
+        { sinceMs: meter.bootAsOf, asOfMs: readAtMs, state: files.get(path), helper: !!agentId })
+      if (tracker !== T || meter !== M || router !== R) return
+      if (read.state) {
+        files.set(path, read.state)
+        if (!agentId) {
+          meter.lastMainReply = read.state.lastMain ?? null
+          rtUpdateFastMode(fastAccess($))
+        }
+      }
+      if (read.skipped) {
+        if (read.reason !== 'reader_unavailable') missingCurrent()
+        return
+      }
+      const matched = new Set()
+      const hasGap = read.issues.some(issue => issue.kind === 'transcript_gap')
+      const byId = new Map(existing.filter(row => row.messageId).map(row => [row.messageId, row]))
+
+
+      const windows = existing.map((row, index) => ({ row, index }))
+        .filter(({ row }) => !row.messageId && Number.isFinite(row.measureOptions?.startMs))
+        .sort((a, b) => a.row.measureOptions.startMs - b.row.measureOptions.startMs)
+      const heap = [], byTime = new Map()
+      const push = entry => {
+        let i = heap.length
+        heap.push(entry)
+        while (i > 0) {
+          const parent = (i - 1) >>> 1
+          if (heap[parent].index <= entry.index) break
+          heap[i] = heap[parent]; i = parent
+        }
+        heap[i] = entry
+      }
+      const pop = () => {
+        const first = heap[0], last = heap.pop()
+        if (heap.length) {
+          let i = 0
+          while (i * 2 + 1 < heap.length) {
+            let child = i * 2 + 1
+            if (child + 1 < heap.length && heap[child + 1].index < heap[child].index) child += 1
+            if (heap[child].index >= last.index) break
+            heap[i] = heap[child]; i = child
+          }
+          heap[i] = last
+        }
+        return first
+      }
+      let windowIndex = 0
+      for (const call of read.calls.filter(c => !byId.has(c.messageId) && Number.isFinite(c.ms)).sort((a, b) => a.ms - b.ms)) {
+        while (windowIndex < windows.length && windows[windowIndex].row.measureOptions.startMs <= call.ms) push(windows[windowIndex++])
+        while (heap.length && heap[0].row.nowMs < call.ms) pop()
+        if (heap.length) byTime.set(call, pop().row)
+      }
+      const reserved = new Set(read.calls.map(c => byId.get(c.messageId) || byTime.get(c)).filter(Boolean))
+      const plan = agentId ? router.subagentRecent?.find(r => r.agent_id === agentId) : null
+      const calls = read.calls.map((c, i) => {
+
+
+        const old = byId.get(c.messageId) || byTime.get(c) ||
+          (!hasGap && !reserved.has(existing[i]) && !matched.has(existing[i]) ? existing[i] : null)
+        if (old) matched.add(old)
+        const named = old?.measureOptions?.named || (agentId ? plan?.named : old?.rec?.named) || { model: c.model, effort: c.effort }
+        const options = { ...(old?.measureOptions || { named, main: !agentId, effort: c.effort, writeTtl: agentId ? 300 : null,
+          skipped: true, switched: false }),
+          excludeSavings: !!agentId && !(typeof named.effort === 'string' && named.effort.length || Number.isFinite(named.effort)) }
+        const costSignature = JSON.stringify([c.model, c.usage, options])
+        const unchanged = old?.costSignature === costSignature
+        const rebuildUsd = unchanged ? null : rebuildDebit(meter.pricer, { ...options, usage: c.usage })
+        const measured = unchanged ? old.measured : measureCall(meter.pricer, { ...options, model: c.model, usage: c.usage, rebuildUsd })
+        const price = unchanged ? old.price : booked(meter.pricer.price(c.model, c.usage,
+          { main: !agentId, passes: (options.advisorCalls || 0) + 1 }), options.advisorCalls)
+        return { ...c, measured, price, measureOptions: options, costSignature,
+          key: old?.key || source + ':message:' + c.messageId, ...(old ? { rec: old.rec } : {}), nowMs: c.ms ?? meter.nowMs }
+      })
+      reconcileCostCalls(tracker, { source, agentId, calls, nowMs: meter.nowMs })
+      if (read.issues.length) {
+        const retained = getCostMissingScopes(tracker).find(scope => scope.source === source)
+        const scope = { segments: retained?.segments || [], recs: retained?.recs || [], ranges: retained?.ranges || [] }
+        const facts = getCostSourceCalls(tracker, source)
+        const segments = [...new Set(tracker.recent.concat(tracker.cur ? [tracker.cur] : [], facts.map(c => c.seg)).filter(Boolean))]
+          .sort((a, b) => a.startMs - b.startMs)
+        const at = (ms) => segments.slice().reverse().find(seg => ms >= seg.startMs && ms <= meter.nowMs)
+        for (const issue of read.issues) {
+
+
+          if (issue.history && !agentId) continue
+          if (agentId) {
+            if (binding?.seg) scope.segments.push(binding.seg)
+            if (binding?.rec) scope.recs.push(binding.rec)
+            continue
+          }
+          if (issue.kind === 'transcript_gap') {
+            const startMs = Number.isFinite(issue.beforeMs) ? issue.beforeMs + 1 : meter.bootAsOf
+            const observedEnd = (issue.observedAtMs ?? readAtMs) + 1
+            const endMs = Number.isFinite(issue.afterMs) ? Math.min(issue.afterMs, observedEnd) : observedEnd
+            if (endMs <= meter.bootAsOf) continue
+            scope.ranges.push({ startMs: Math.max(startMs, meter.bootAsOf), endMs })
+
+
+            for (const fact of facts) {
+              const started = fact.measureOptions?.startMs ?? fact.seg?.startMs
+              if ((Number.isFinite(started) && started >= startMs && started < endMs) ||
+                  (Number.isFinite(fact.nowMs) && fact.nowMs >= startMs && fact.nowMs < endMs)) {
+                if (fact.seg) scope.segments.push(fact.seg)
+                if (fact.rec) scope.recs.push(fact.rec)
+              }
+            }
+            const endpoint = facts.find(c => c.nowMs === issue.afterMs)
+            if (endpoint?.rec && issue.afterMs <= observedEnd && (!endpoint.rec.done || endpoint.rec.submitMs >= startMs)) {
+              if (endpoint.seg) scope.segments.push(endpoint.seg)
+              scope.recs.push(endpoint.rec)
+            }
+            continue
+          }
+          const startMs = Number.isFinite(issue.ms) ? issue.ms : issue.beforeMs
+          const endMs = Number.isFinite(issue.ms) ? issue.ms + 1 : Math.min(
+            Number.isFinite(issue.afterMs) ? issue.afterMs : Infinity, (issue.observedAtMs ?? readAtMs) + 1)
+          if (!Number.isFinite(startMs)) {
+            if (currentScope.seg) scope.segments.push(currentScope.seg)
+            if (currentScope.rec) scope.recs.push(currentScope.rec)
+            scope.ranges.push(...currentScope.ranges)
+            continue
+          }
+          if (endMs <= meter.bootAsOf) continue
+          scope.ranges.push({ startMs: Math.max(startMs, meter.bootAsOf), endMs })
+          const seg = at(startMs)
+          if (seg) scope.segments.push(seg)
+
+
+          if (Number.isFinite(issue.ms) && seg) {
+            const prior = facts.filter(c => c.seg === seg && (c.measureOptions?.startMs ?? c.nowMs) <= issue.ms)
+              .sort((a, b) => (a.measureOptions?.startMs ?? a.nowMs) - (b.measureOptions?.startMs ?? b.nowMs)).at(-1)
+            if (prior?.rec) scope.recs.push(prior.rec)
+          }
+        }
+        if (scope.segments.length || scope.recs.length || scope.ranges.length) markCostSourceMissing(tracker, source, scope)
+      }
+      applyRecords(before)
+      $.ui.invalidate('ui.render')
+    } catch (_) {
+      if (tracker === T && meter === M && router === R) missingCurrent()
+    }
+  }
+  meter.costReadChain = (meter.costReadChain || Promise.resolve()).then(run, run)
+  await meter.costReadChain
 }
 
 
@@ -1816,6 +2074,71 @@ const rtIsHuman = (e) => {
 }
 
 
+
+async function rtFastMode(access, refresh = false) {
+  if (!refresh) return RM.fastMode?.blocked === true
+  const runtime = RM, meter = M
+  runtime.fastMode ||= newFastMode()
+  const sources = {}
+  for (const source of ['policy', 'flag', 'local', 'project', 'user']) {
+    try {
+      const value = await access.readSettings(source)
+      sources[source] = { fastMode: value?.fastMode, fastModePerSessionOptIn: value?.fastModePerSessionOptIn }
+    } catch (_) {
+      runtime.fastMode.settingsReadErrors = (runtime.fastMode.settingsReadErrors || 0) + 1
+      if (!runtime.fastMode.settingsErrorNoted) {
+        runtime.fastMode.settingsErrorNoted = true
+        access.note('IQ Code: fast-mode settings read errors: ' + runtime.fastMode.settingsReadErrors + '.')
+      }
+    }
+  }
+  let model = null, disabled
+  try { const main = await access.readMainModel(); model = resolveBase(main, main) } catch (_) {}
+  try { disabled = await access.disabled() } catch (_) {}
+  if (typeof meter.costTranscriptPath === 'string' && typeof access.run === 'function' && !meter.quiet) {
+    const refreshUsage = async () => {
+      if (runtime !== RM || meter !== M) return
+      const files = meter.costTranscriptFiles || (meter.costTranscriptFiles = new Map())
+      const read = await readTranscriptUsage(access, meter.costTranscriptPath, {
+        sinceMs: meter.bootAsOf, asOfMs: meter.nowMs, state: files.get(meter.costTranscriptPath), helper: false,
+      })
+      if (runtime !== RM || meter !== M || read.skipped || !read.state) return
+      files.set(meter.costTranscriptPath, read.state)
+      meter.lastMainReply = read.state.lastMain ?? null
+    }
+    meter.costReadChain = (meter.costReadChain || Promise.resolve()).then(refreshUsage, refreshUsage)
+    await meter.costReadChain
+  }
+  if (runtime !== RM || meter !== M) return true
+  const settings = resolveFastSettings(sources)
+  runtime.fastFacts = { settings, policyOff: settings.policyOff, disabled, model }
+  return rtUpdateFastMode(access)
+}
+
+function rtUpdateFastMode(access) {
+  const runtime = RM, meter = M
+  runtime.fastMode ||= newFastMode()
+  const wasFast = runtime.fastMode.active
+  const blocked = observeFastMode(runtime.fastMode, { ...runtime.fastFacts, lastMain: meter.lastMainReply })
+  if (wasFast !== runtime.fastMode.active) {
+    R.last = null
+    R.cacheStart = null
+    R.cacheModels = {}
+    R.cacheRestart = true
+    R.cacheStartRead = true
+    R.observedCacheTtlMs = null
+  }
+  if (blocked) {
+    clearRouteHold(R)
+    R.lastAppliedPick = null
+    if (R.armed && !runtime.fastMode.noted) {
+      runtime.fastMode.noted = true
+      access.note(FAST_NOTE)
+    }
+  }
+  return blocked
+}
+
 async function rtSubmit($, e) {
   try {
     const sid = await $.session.id()
@@ -1823,6 +2146,7 @@ async function rtSubmit($, e) {
   } catch (_) {}
   if (!RM.ready || !R.armed || e.agentId != null || (!rtIsHuman(e) && !carryEligible(e))) return null
   if (e.turnId !== undefined) return null
+  if (await rtFastMode(fastAccess($), true)) return null
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs
   const taskRuntime = RM, taskRouter = R
@@ -1937,7 +2261,7 @@ function rtDropped(sub) {
 
 
 async function rtFetch($, req, deadlineMs, runtime, requestEpoch) {
-  if (deadlineMs <= await $.clock.now() || !R.armed || await trafficOff(iqAccess($)) || RM !== runtime || RM.requestEpoch !== requestEpoch) return null
+  if (await rtFastMode(fastAccess($)) || deadlineMs <= await $.clock.now() || !R.armed || await trafficOff(iqAccess($)) || RM !== runtime || RM.requestEpoch !== requestEpoch) return null
   if (LIMIT_AWARE_ENABLED) {
     const facts = await refreshLimits($)
     if (!R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch) return null
@@ -1952,7 +2276,7 @@ async function rtFetch($, req, deadlineMs, runtime, requestEpoch) {
   const callMs = await $.clock.now()
   return routeFetch({ fetch: async (url, init) => {
     State.refreshUsageReporting(await readUsageReporting(iqAccess($)))
-    if (!R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch || deadlineMs <= await $.clock.now()) return null
+    if (await rtFastMode(fastAccess($)) || !R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch || deadlineMs <= await $.clock.now()) return null
     consumeRouteReset(R, req)
     State.noteRouteCall(M.sessionId, callMs)
     applyDataFeaturesPreference(req, State.getSetting('usageReporting'))
@@ -2088,7 +2412,7 @@ function rtTurnStart(e) {
 
 
 
-const rtLive = () => RM.ready && R.armed && !R.errorsOff && !R.stopped && !R.killed
+const rtLive = () => !RM.fastMode?.blocked && RM.ready && R.armed && !R.errorsOff && !R.stopped && !R.killed
 
 
 async function rtStepBegin($, e) {
@@ -2096,6 +2420,14 @@ async function rtStepBegin($, e) {
   if (!RM.ready) return out
   const main = e.agentId === undefined || e.agentId === null
   if (!main) return out
+  if (R.armed && await rtFastMode(fastAccess($))) {
+    const rec = RM.byTurn.get(e.turnId)
+    if (rec) settleKept(R, rec, 'fast_mode')
+    out.e2 = e
+    out.fastMode = true
+    out.startMs = await $.clock.now()
+    return out
+  }
   const rec = RM.byTurn.get(e.turnId) || null
 
   if ((!rec || !rec.decided) && RM.explicitEffort != null && RM.explicitEffort !== e.effort) {
@@ -2372,6 +2704,10 @@ function rtRace($, promise, ms) {
 async function rtStepEnd($, e2, result, begun) {
   if (begun.startMs === null || e2.agentId) return
   const u = result && result.usage && typeof result.usage === 'object' ? result.usage : null
+  if (u?.speed === 'fast' || u?.speed === 'standard') {
+    M.lastMainReply = { speed: u.speed, model: u.model || e2.model, ms: RM.nowMs }
+    rtUpdateFastMode(fastAccess($))
+  }
   if (u === null) return
   const nowMs = await $.clock.now()
   RM.nowMs = nowMs

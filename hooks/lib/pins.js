@@ -1,7 +1,7 @@
 export const NAME = 'iq-code'
-export const VERSION = '1.2.0'
-export const CARD_FILE = 'data/rate_card_2026-10-07.json'
-export const PIN_CARD = '01d53c1ca6321acb8b51ba7300f8171c750c0ffc2ee24001d3b9a84c9eb300dd'
+export const VERSION = '1.2.2'
+export const CARD_FILE = 'data/rate_card_2026-10-16.json'
+export const PIN_CARD = '093cabef3a7ae0acee793e6c3701c36ecd8380e0fc323cee4cd099df43e4c03b'
 export const DATA_DIR = '.claude/iq/meter'
 export const MAX_ERRORS = 5
 export const ERROR_LOG_CAP = 48 * 1024

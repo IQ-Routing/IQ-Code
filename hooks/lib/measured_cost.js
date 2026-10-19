@@ -28,7 +28,7 @@ export function measuredTokens(usage, main = false, writeTtl = null) {
   }
 
 
-  const explicitThinking = u.thinking_tokens ?? u.reasoning_tokens ?? u.output_tokens_details?.reasoning_tokens
+  const explicitThinking = u.thinking_tokens ?? u.reasoning_tokens ?? u.output_tokens_details?.thinking_tokens ?? u.output_tokens_details?.reasoning_tokens
   let thinking = null, output = outputTotal
   if (explicitThinking !== undefined && explicitThinking !== null) {
     if (!count(explicitThinking) || outputTotal === null || explicitThinking > outputTotal) missing.push('thinking_tokens')
@@ -37,12 +37,14 @@ export function measuredTokens(usage, main = false, writeTtl = null) {
   return { usage: { input, cache_read: cacheRead, cache_write_5m: w5, cache_write_1h: w1, output, thinking }, missing }
 }
 
-function priceClasses(pricer, model, tokens, passes = 1) {
+function priceClasses(pricer, model, tokens, passes = 1, speed) {
   const hit = pricer.resolve(priceId(model))
   if (!hit) return { usd: null, missing: ['model_rate'] }
+  const row = speed === 'fast' ? hit.row.fast : hit.row
+  if (!row) return { usd: null, missing: ['speed_rate'] }
   const context = (tokens.input + tokens.cache_read + tokens.cache_write_5m + tokens.cache_write_1h) / Math.max(1, passes)
 
-  const r = hit.row.tier_break_tokens && context > hit.row.tier_break_tokens && hit.row.tier_above ? hit.row.tier_above : hit.row
+  const r = row.tier_break_tokens && context > row.tier_break_tokens && row.tier_above ? row.tier_above : row
   const rates = { input: r.input, cache_read: r.cache_read, cache_write_5m: r.cache_write_5m,
     cache_write_1h: r.cache_write_1h, output: r.output, thinking: r.output }
   const missing = [], parts = {}
@@ -73,22 +75,23 @@ export function rebuildDebit(pricer, { named, usage, prev, startMs, ttlMs, switc
   const warm = { ...u, cache_read: u.cache_read + move, cache_write_1h: u.cache_write_1h - from1,
     cache_write_5m: u.cache_write_5m - (move - from1) }
   const passes = responsePasses(usage, named.model, advisorCalls)
-  const full = priceClasses(pricer, named.model, u, passes), held = priceClasses(pricer, named.model, warm, passes)
+  const full = priceClasses(pricer, named.model, u, passes, usage?.speed), held = priceClasses(pricer, named.model, warm, passes, usage?.speed)
   return full.usd === null || held.usd === null ? null : Math.max(0, full.usd - held.usd)
 }
 
 
 
 
+
 export function measureCall(pricer, { model, effort = null, named = null, usage, main = false,
-  switched = false, rebuildUsd, skipped = false, writeTtl = null, advisorCalls = 0 } = {}) {
+  switched = false, rebuildUsd, skipped = false, writeTtl = null, advisorCalls = 0, excludeSavings = false } = {}) {
   const tokens = measuredTokens(usage, main, writeTtl)
   const extras = extraPasses(usage, model)
   const passes = responsePasses(usage, model, advisorCalls, extras)
-  const actual = tokens.missing.length ? { usd: null, missing: [] } : priceClasses(pricer, model, tokens.usage, passes)
+  const actual = tokens.missing.length ? { usd: null, missing: [] } : priceClasses(pricer, model, tokens.usage, passes, usage?.speed)
   let paidComplete = tokens.missing.length === 0 && actual.usd !== null
   const namedEffortKnown = (typeof named?.effort === 'string' && named.effort.length > 0) || (typeof named?.effort === 'number' && Number.isFinite(named.effort))
-  const baseline = !named?.model || !namedEffortKnown || tokens.missing.length ? { usd: null, missing: [] } : priceClasses(pricer, named.model, tokens.usage, passes)
+  const baseline = !named?.model || !namedEffortKnown || tokens.missing.length ? { usd: null, missing: [] } : priceClasses(pricer, named.model, tokens.usage, passes, usage?.speed)
   const penalty = rebuildUsd === undefined && !switched ? 0 : money(rebuildUsd) ? rebuildUsd : null
   const missing = [...tokens.missing, ...actual.missing, ...baseline.missing.map((k) => 'baseline_' + k)]
   if (!named?.model) missing.push('named_model')
@@ -97,9 +100,9 @@ export function measureCall(pricer, { model, effort = null, named = null, usage,
 
   for (const pass of extras) {
     const t = measuredTokens(pass.usage, false, 300)
-    const a = t.missing.length ? { usd: null, missing: t.missing } : priceClasses(pricer, pass.model, t.usage)
+    const a = t.missing.length ? { usd: null, missing: t.missing } : priceClasses(pricer, pass.model, t.usage, 1, pass.usage?.speed)
     const baselineModel = pass.type === 'advisor_message' ? pass.model : named?.model
-    const b = !baselineModel || t.missing.length ? { usd: null, missing: t.missing } : priceClasses(pricer, baselineModel, t.usage)
+    const b = !baselineModel || t.missing.length ? { usd: null, missing: t.missing } : priceClasses(pricer, baselineModel, t.usage, 1, pass.usage?.speed)
     if (a.usd === null || b.usd === null) missing.push('extra_pass')
     if (a.usd === null) paidComplete = false
     actual.usd = actual.usd === null && a.usd === null ? null : (actual.usd ?? 0) + (a.usd ?? 0)
@@ -116,8 +119,9 @@ export function measureCall(pricer, { model, effort = null, named = null, usage,
   const saved = skipped ? penalty > 0 ? -penalty : 0 : complete ? baseline.usd - actual.usd - penalty : null
   return { model, effort, named_model: named?.model || null, named_effort: named?.effort ?? null,
     usage: tokens.usage, paid_usd: actual.usd, baseline_usd: baseline.usd,
-    rebuild_debit_usd: penalty, saved_usd: saved,
-    percent: saved !== null && baseline.usd > 0 ? 100 * saved / baseline.usd : null,
+    rebuild_debit_usd: penalty, saved_usd: excludeSavings ? 0 : saved,
+    ...(excludeSavings ? { savings_excluded: true } : {}),
+    percent: !excludeSavings && saved !== null && baseline.usd > 0 ? 100 * saved / baseline.usd : null,
     complete, paid_complete: paidComplete && actual.usd !== null, missing, skipped, advisor_unpriced: advisorUnpriced, tokenizer_factor: 1 }
 }
 

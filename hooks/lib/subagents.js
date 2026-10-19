@@ -107,6 +107,8 @@ export function planSubagent(a) {
 
 export function effortFor(plan, engineEffort) {
   if (!plan || plan.fromIq !== true) return undefined
+
+
   const effort = supportedEffort(plan.model, plan.explicitEffort != null ? capEffort(plan.effort, engineEffort) : plan.effort)
   return effort !== null && effort !== engineEffort ? effort : undefined
 }

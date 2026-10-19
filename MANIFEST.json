@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pluginId": "iq-code@iq-routing",
-  "productVersion": "1.2.0",
+  "productVersion": "1.2.2",
   "forecastSource": "server",
   "files": [
     {
@@ -12,7 +12,7 @@
     {
       "path": ".claude-plugin/plugin.json",
       "bytes": 971,
-      "sha256": "0161defc43dc0ef6753fe1ef69895f05c1403dc59f0f62977ed6b30bfebee16b"
+      "sha256": "5ba8c0b8cfa14e7243c14740f6df4968766fcf7aec06491dd7109d664287af5e"
     },
     {
       "path": ".gitattributes",
@@ -46,8 +46,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 18311,
-      "sha256": "cc9185027066642742d14483c466db7c7627fd1fff5e116c35d532429cbb46fc"
+      "bytes": 18553,
+      "sha256": "56cbce008e6da6fe779cfb109e7363a165e2b6ec3e374356da28710e8fd07027"
     },
     {
       "path": "data/logo_frames.json",
@@ -55,9 +55,9 @@
       "sha256": "ce122d880f81a9ce27439472060aac4e56ac867cbd2419b762ad4ecfb11e610e"
     },
     {
-      "path": "data/rate_card_2026-10-07.json",
-      "bytes": 9089,
-      "sha256": "01d53c1ca6321acb8b51ba7300f8171c750c0ffc2ee24001d3b9a84c9eb300dd"
+      "path": "data/rate_card_2026-10-16.json",
+      "bytes": 9289,
+      "sha256": "093cabef3a7ae0acee793e6c3701c36ecd8380e0fc323cee4cd099df43e4c03b"
     },
     {
       "path": "extras/terminal/IQ-Dark.itermcolors",
@@ -120,6 +120,11 @@
       "sha256": "025e5c19b2fe22de3b2fc9b8b4ad33dc2aa751a77d294bbddb3be10d5845e4e3"
     },
     {
+      "path": "hooks/lib/fast_mode.js",
+      "bytes": 1581,
+      "sha256": "a814476407672624dff66a488b73d9206f397c7da63bd3b488d72cf4f2507099"
+    },
+    {
       "path": "hooks/lib/feedback.js",
       "bytes": 1596,
       "sha256": "4ce96f11753aebf3c6a31411b4d010c0b446031076f1b3e3895bbfdba346158b"
@@ -131,8 +136,8 @@
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 23323,
-      "sha256": "31c0678809093d6e3120006821b19ac2023ac5a58e096058c113cd9b79332d12"
+      "bytes": 23369,
+      "sha256": "5ab3945c4496c2f72b3120cc0ef275dbad5f7a74bd69d6e29def4f51fe1257e8"
     },
     {
       "path": "hooks/lib/limit_savings.js",
@@ -161,8 +166,8 @@
     },
     {
       "path": "hooks/lib/measured_cost.js",
-      "bytes": 9533,
-      "sha256": "f682279317c74323cbd4554331f6573ebc14f69d1d53dfd250b69c2b5815fda9"
+      "bytes": 9902,
+      "sha256": "cf8ac0e793b6f04315060fe757748743fc6cd55e83dfc75884741fe69f9a26b1"
     },
     {
       "path": "hooks/lib/meterview.js",
@@ -177,7 +182,7 @@
     {
       "path": "hooks/lib/pins.js",
       "bytes": 426,
-      "sha256": "0c96c0e55e8687c9e50f7fa26b9062ab00080e48236530faa083912cdba68aa4"
+      "sha256": "1272534c0a3c3d7509ad908d9b8709507589c45ba42165336188ff59f29a1f09"
     },
     {
       "path": "hooks/lib/plan_type.js",
@@ -186,8 +191,8 @@
     },
     {
       "path": "hooks/lib/pricing.js",
-      "bytes": 8703,
-      "sha256": "c299dc279e71eafb0a01afc776e30ade90fb06992d043430dfc2f668ca28c7fe"
+      "bytes": 8916,
+      "sha256": "9a520e0eff8d71651b73a529d38c96c425a0518c1ab4bca4bed42442c4f2086e"
     },
     {
       "path": "hooks/lib/receipt.js",
@@ -206,8 +211,8 @@
     },
     {
       "path": "hooks/lib/router.js",
-      "bytes": 38158,
-      "sha256": "adc85711b2747093fdcc29eedf193a2570a055481e41a577701a011ef541ee66"
+      "bytes": 40112,
+      "sha256": "e9c361782c6e68351453ecce7cc32f7f360f0e147859c3e2c1a76a14366f0318"
     },
     {
       "path": "hooks/lib/runtime_mode.js",
@@ -232,7 +237,7 @@
     {
       "path": "hooks/lib/skin.js",
       "bytes": 34855,
-      "sha256": "ce18385a2552202982343e5b841e60db084a0f7f6c0016aa32e45d6034b816b5"
+      "sha256": "2525b980cf72d1646dd133991026c1c375c0df6e8da171c13152bdcc9210d5d4"
     },
     {
       "path": "hooks/lib/state.js",
@@ -246,8 +251,8 @@
     },
     {
       "path": "hooks/lib/subagents.js",
-      "bytes": 6932,
-      "sha256": "7731f8fa3ed4e9e4a27fe54b6cc7271e0d2f3f1cecd4b693b85c60e9e654b69e"
+      "bytes": 6934,
+      "sha256": "904e44072108ad9e6c2e2a37a6b7cc1c82c65903805b56de986fb10d7fe3a920"
     },
     {
       "path": "hooks/lib/task_state.js",
@@ -256,13 +261,18 @@
     },
     {
       "path": "hooks/lib/tracker.js",
-      "bytes": 12742,
-      "sha256": "7ba1d16a0dc59621c8a2afe816f7377c17264e4ec5644dbe44c1a5b4163959bd"
+      "bytes": 22145,
+      "sha256": "488190cc92cd99eafb4ab0b150bc251b067eef9e969d4497595a5c67f00c4ba8"
     },
     {
       "path": "hooks/lib/traffic.js",
       "bytes": 9583,
       "sha256": "7d5679f73b242f9de502653bc3b5c28ba235a32312abd19a8812e8c1bb450b2e"
+    },
+    {
+      "path": "hooks/lib/transcript_usage.js",
+      "bytes": 14285,
+      "sha256": "5bffa817a44eef4c55bedbdaffa856d9f3ac167c4c0425e38a7ff0597c3f4c1c"
     },
     {
       "path": "hooks/lib/trivial_turn.js",
@@ -281,8 +291,8 @@
     },
     {
       "path": "hooks/lib/usage_report.js",
-      "bytes": 25941,
-      "sha256": "f4dec9b8ac22d4ceb3d5632f47fd7b12d7a3200d5854adb6f01b879e264ea2ad"
+      "bytes": 25942,
+      "sha256": "21a84e7fd707d6a4d223af3ec796646e660f22f8299a1f1ebf764458a42654f4"
     },
     {
       "path": "hooks/lib/usage_session.js",
@@ -301,8 +311,8 @@
     },
     {
       "path": "hooks/register.js",
-      "bytes": 106364,
-      "sha256": "ce0155012538bfa621177e8695723d60a4e3511f09c87277077a50e3968591d3"
+      "bytes": 122675,
+      "sha256": "8b0e4a2bc095fcb79e1200c01b8cdd3d7d18148318cd590f439aee96a79ff637"
     },
     {
       "path": "hooks/route_handlers.js",
@@ -311,8 +321,8 @@
     },
     {
       "path": "hooks/thin_subagent_handlers.js",
-      "bytes": 24020,
-      "sha256": "d6bd50b1bf97587c9a08720200ce7ae97e33f6bfee8b983eb1d163e843711e19"
+      "bytes": 24952,
+      "sha256": "23948712422a39fc7f26e8ea2944711459f3be258e98ab0e65f52acefac91420"
     },
     {
       "path": "hooks/ui_handlers.js",
