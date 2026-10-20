@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pluginId": "iq-code@iq-routing",
-  "productVersion": "1.2.2",
+  "productVersion": "1.2.3",
   "forecastSource": "server",
   "files": [
     {
@@ -12,7 +12,7 @@
     {
       "path": ".claude-plugin/plugin.json",
       "bytes": 971,
-      "sha256": "5ba8c0b8cfa14e7243c14740f6df4968766fcf7aec06491dd7109d664287af5e"
+      "sha256": "6d0030790a30bad03d77ad42d2aa47e2f77a74c11b1aab84ab0f961e53047b48"
     },
     {
       "path": ".gitattributes",
@@ -47,7 +47,7 @@
     {
       "path": "README.md",
       "bytes": 18553,
-      "sha256": "56cbce008e6da6fe779cfb109e7363a165e2b6ec3e374356da28710e8fd07027"
+      "sha256": "cc83a0a180ffc8c90076bd28638a0fcac8ddd7566e402cc89fc96367cd9d6457"
     },
     {
       "path": "data/logo_frames.json",
@@ -96,8 +96,8 @@
     },
     {
       "path": "hooks/auth_handlers.js",
-      "bytes": 6591,
-      "sha256": "0a9e1ab9fa3f6ebe929ddf53f6af920bb45af6a90f17b81337c95c98c2d9946d"
+      "bytes": 6676,
+      "sha256": "98aa9423fc48959993fa595ea0f0ea16800476422ad2553e62c2b727030d2249"
     },
     {
       "path": "hooks/hooks.json",
@@ -111,8 +111,8 @@
     },
     {
       "path": "hooks/lib/auth_process.js",
-      "bytes": 3937,
-      "sha256": "0bb65dbed2dbbcefda21b2d97017ad5a89c11f6930e2986259b535fc3a4ddd7f"
+      "bytes": 4792,
+      "sha256": "1e55a50ea986db63acff648b1e0fcd9a4ce64daa252c8be34712045531862dea"
     },
     {
       "path": "hooks/lib/consequence.js",
@@ -136,8 +136,8 @@
     },
     {
       "path": "hooks/lib/iq_client.js",
-      "bytes": 23369,
-      "sha256": "5ab3945c4496c2f72b3120cc0ef275dbad5f7a74bd69d6e29def4f51fe1257e8"
+      "bytes": 25845,
+      "sha256": "980a10d122831b4830a31d0db16b6ac8ff76025c06487fe6d4740c0f458d2e3a"
     },
     {
       "path": "hooks/lib/limit_savings.js",
@@ -182,7 +182,7 @@
     {
       "path": "hooks/lib/pins.js",
       "bytes": 426,
-      "sha256": "1272534c0a3c3d7509ad908d9b8709507589c45ba42165336188ff59f29a1f09"
+      "sha256": "1210653f0d3a7e2dfedf098d0a4b5e35a8ee9030c9cdfc884ce6086ea3014309"
     },
     {
       "path": "hooks/lib/plan_type.js",
@@ -226,18 +226,28 @@
     },
     {
       "path": "hooks/lib/server_forecast.js",
-      "bytes": 8752,
-      "sha256": "f2eafaf88fd1df7c7bb4b7653317f07bac513310a039e477fcfc830a507a8e34"
+      "bytes": 8901,
+      "sha256": "63be79512e47cab76b0f640983de9f31723983bc70e9df005da4f5789f4df850"
     },
     {
       "path": "hooks/lib/session_defaults.js",
-      "bytes": 1206,
-      "sha256": "dde77075e87364f939ca2fe70140b483ef77aaa425de56e27d0591ab353067e1"
+      "bytes": 1289,
+      "sha256": "f40ffda1f9a197883306935994c009f5349904b5cecb8103a193727c2c03f4af"
+    },
+    {
+      "path": "hooks/lib/session_store.js",
+      "bytes": 3683,
+      "sha256": "4abee2c38062b768e2f290ff1c56d7096bceeff596b035f3cf0717ece086d3e1"
+    },
+    {
+      "path": "hooks/lib/settings_store.js",
+      "bytes": 29458,
+      "sha256": "7116d58c82ad33287e39d2e6d78fa4fafc1fc616d2d22804e9e97a08c1df4c64"
     },
     {
       "path": "hooks/lib/skin.js",
       "bytes": 34855,
-      "sha256": "2525b980cf72d1646dd133991026c1c375c0df6e8da171c13152bdcc9210d5d4"
+      "sha256": "cef9d92a66e5a0a9f59d288be2360f8a6134eb2cc098cf2ae5c2c4b5258c1ae7"
     },
     {
       "path": "hooks/lib/state.js",
@@ -266,13 +276,13 @@
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 9583,
-      "sha256": "7d5679f73b242f9de502653bc3b5c28ba235a32312abd19a8812e8c1bb450b2e"
+      "bytes": 5799,
+      "sha256": "bc847cdfd63d252a565710a736bff5beffd240626ddfbc808c2f05f67b6e19e8"
     },
     {
       "path": "hooks/lib/transcript_usage.js",
-      "bytes": 14285,
-      "sha256": "5bffa817a44eef4c55bedbdaffa856d9f3ac167c4c0425e38a7ff0597c3f4c1c"
+      "bytes": 15863,
+      "sha256": "87c4a7a1948ab123b3982bbbf12f93f9b23effb896cefcc59de4e588dd364b8a"
     },
     {
       "path": "hooks/lib/trivial_turn.js",
@@ -301,8 +311,8 @@
     },
     {
       "path": "hooks/lib/util.js",
-      "bytes": 1565,
-      "sha256": "f29a4da466727885294e61d07455361a414cce1eac6bbcf1b37ddc73b04b98bc"
+      "bytes": 4899,
+      "sha256": "4c45cae65d72ec7d84c30e461d82b55d04201ae1cb455cf7a1b135e24d6c4b21"
     },
     {
       "path": "hooks/lib/view_model.js",
@@ -311,38 +321,38 @@
     },
     {
       "path": "hooks/register.js",
-      "bytes": 122675,
-      "sha256": "8b0e4a2bc095fcb79e1200c01b8cdd3d7d18148318cd590f439aee96a79ff637"
+      "bytes": 121858,
+      "sha256": "9bf5116b0fadffc424aa66ee62bcdc4e5cfc2bff0386026f8c4223f59f61aef6"
     },
     {
       "path": "hooks/route_handlers.js",
-      "bytes": 12972,
-      "sha256": "8ba1f7de87e09ae112bd2133c070668769e7d1b370ae5c1e53c93da77dd66656"
+      "bytes": 13092,
+      "sha256": "39d9ba49ebc1613663c17a91a584a6d577031a9eb4b95a65e16f07c53c061792"
     },
     {
       "path": "hooks/thin_subagent_handlers.js",
-      "bytes": 24952,
-      "sha256": "23948712422a39fc7f26e8ea2944711459f3be258e98ab0e65f52acefac91420"
+      "bytes": 24928,
+      "sha256": "59a30698cf9aac2428463c69ecb19db6121b278ec8d81e46b0ce2bdd756902b6"
     },
     {
       "path": "hooks/ui_handlers.js",
-      "bytes": 31235,
-      "sha256": "c88fa49aed860c4db7e83f6deba9a6288055197185c5d06e4bd7f44e715d0f8d"
+      "bytes": 31722,
+      "sha256": "3023e3a288d4fa64332767cdc8ceef11656709b33ff060a78d3801ae1f8216e1"
     },
     {
       "path": "install.cmd",
-      "bytes": 1861,
-      "sha256": "db3baac7819bb6cd462768c0c5a47f0dede32842b3fd8ab5e3e8832e47a93850"
+      "bytes": 1984,
+      "sha256": "ba4b06b43f253600721af64354a24bf7e8b622b21bb8edc3cba9a5611c1f74b2"
     },
     {
       "path": "install.ps1",
-      "bytes": 10332,
-      "sha256": "f9feb64cc652e1bdbeaab87115bd0a284e9634d0d1c38b180ed4e33a1131d3d0"
+      "bytes": 11071,
+      "sha256": "9c00bdf477c714bd71659e8c41afcc87efbb120f25688e0a85f1a134b5d30723"
     },
     {
       "path": "install.sh",
-      "bytes": 7167,
-      "sha256": "9dc28fb96e3b234ee777a3da97452164dcec5d48737ac5aad96b0e0f44307062"
+      "bytes": 7329,
+      "sha256": "cf8ab9218b0ab3acb0202400b91f4fc785ff3b78701db7da24d7dcc1a3e2738c"
     },
     {
       "path": "themes/iq-dark.json",

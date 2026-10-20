@@ -2,7 +2,7 @@
 import { createAuth } from './lib/auth.js'
 import { configureSecret, launchBrowser, resolveClaudeExecutable } from './lib/auth_process.js'
 import { authCommandMatches, loginPane } from './lib/login_pane.js'
-import { readKey, trafficOff, homeFrom, processTrusted, trustedSettingsHome, writeTrustedSettings } from './lib/traffic.js'
+import { readKey, trafficOff, homeFrom, processTrusted, trustedSettingsHome, writeTrustedSettings, HELPER_PROCESS_ENV } from './lib/traffic.js'
 import { BROWSER_LOGIN_PLATFORMS, BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
 import { destinationFrom, userOrigin } from './lib/iq_client.js'
 import { VERSION } from './lib/pins.js'
@@ -20,7 +20,7 @@ export const authCancel = () => { commandGeneration += 1; if (A) A.cancel() }
 
 function access($) {
   return { configured: () => H.pluginKey(), home: async () => homeFrom(await $.env.get('USERPROFILE'), await $.env.get('HOME')),
-    exists: (path) => $.fs.exists(path), read: (path) => $.fs.read(path), user: () => $.settings.read({ source: 'user' }),
+    exists: (path) => $.fs.exists(path), stat: (path) => $.fs.stat(path), read: (path) => $.fs.read(path), user: () => $.settings.read({ source: 'user' }),
     readSettings: (source) => $.settings.read({ source }), write: (path, text) => $.fs.write(path, text), run: (argv, init) => $.process.run(argv, init),
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'), disabled: () => $.env.get('IQ_ROUTER_DISABLED'),
     cwd: () => $.session.cwd(), settings: () => $.settings.read(), force5m: () => $.env.get('FORCE_PROMPT_CACHING_5M'),
@@ -52,7 +52,7 @@ async function controller($) {
         if (!(await trusted())) return false
         const executable = await resolveClaudeExecutable(processHost)
         if (!executable) return false
-        const result = await $.process.run([executable, '--version'], { timeoutMs: 5000, cwd: home })
+        const result = await $.process.run([executable, '--version'], { timeoutMs: 5000, cwd: home, env: { ...HELPER_PROCESS_ENV } })
         return result && result.exitCode === 0
       }
       catch (_) { return false }

@@ -1,5 +1,5 @@
 
-import { homeFrom, pathIn, validKey, LOGGED_OUT_KEY } from './traffic.js'
+import { homeFrom, pathIn, validKey, LOGGED_OUT_KEY, HELPER_PROCESS_ENV, trustedSettingsHome, processTrusted } from './traffic.js'
 import { AUTH_VERIFICATION_URL } from './iq_client.js'
 
 export const CONFIGURE_TIMEOUT_MS = 15000
@@ -41,6 +41,24 @@ export async function resolveClaudeExecutable(host) {
   return null
 }
 
+
+
+export async function readAuthStatus(access) {
+  try {
+
+    const home = await trustedSettingsHome(access)
+    if (!home || !(await processTrusted(access.readSettings))) return null
+    const platform = /^[A-Za-z]:[\\/]/.test(home) ? 'win32' :
+      await access.exists('/System/Library/CoreServices/SystemVersion.plist') === true ? 'darwin' : 'linux'
+    const executable = await resolveClaudeExecutable({ platform, home: async () => home, exists: access.exists })
+    if (!executable) return null
+    const result = await access.run([executable, 'auth', 'status'], {
+      timeoutMs: 5000, cwd: home, env: { ...HELPER_PROCESS_ENV },
+    })
+    return result?.exitCode === 0 ? result.stdout : null
+  } catch (_) { return null }
+}
+
 export async function configureSecret(host, value, stillCurrent = () => true) {
   if (value !== LOGGED_OUT_KEY && validKey(value) !== value) return { ok: false, code: 'invalid_credential' }
   const job = configureWrites.then(async () => {
@@ -51,7 +69,7 @@ export async function configureSecret(host, value, stillCurrent = () => true) {
       if (!executable) return { ok: false, code: 'cli_missing' }
       if (await stillCurrent() !== true) return { ok: false, code: 'cancelled' }
       const result = await host.run([executable, 'plugin', 'configure', 'iq-code@iq-routing', '--values-stdin'], {
-        stdin: JSON.stringify({ iq_api_key: value }) + '\n', timeoutMs: CONFIGURE_TIMEOUT_MS, cwd: home,
+        stdin: JSON.stringify({ iq_api_key: value }) + '\n', timeoutMs: CONFIGURE_TIMEOUT_MS, cwd: home, env: { ...HELPER_PROCESS_ENV },
       })
       return result && result.exitCode === 0 ? { ok: true, code: 'saved' } : { ok: false, code: 'configure_failed' }
     } catch (_) { return { ok: false, code: 'configure_failed' } }
@@ -75,7 +93,7 @@ export async function launchBrowser(host) {
     }
     if (!executable) return { ok: false, code: 'opener_unavailable' }
     argv = platform === 'win32' ? [executable, 'url.dll,FileProtocolHandler', AUTH_VERIFICATION_URL] : [executable, AUTH_VERIFICATION_URL]
-    const result = await host.run(argv, { timeoutMs: OPENER_TIMEOUT_MS, cwd: home })
+    const result = await host.run(argv, { timeoutMs: OPENER_TIMEOUT_MS, cwd: home, env: { ...HELPER_PROCESS_ENV } })
     return result && result.exitCode === 0 ? { ok: true, code: 'opened' } : { ok: false, code: 'opener_unavailable' }
   } catch (_) { return { ok: false, code: 'opener_unavailable' } }
 }

@@ -105,6 +105,24 @@ function Set-IqKey {
     }
 }
 
+function Read-PluginManifest([string]$Path) {
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        if ($stream.Length -gt 65536) { return $null }
+        $reader = [IO.StreamReader]::new($stream)
+        # Bound the read too: another process can grow the file after Length.
+        $buffer = New-Object char[] 65537
+        $count = $reader.ReadBlock($buffer, 0, $buffer.Length)
+        if ($count -eq 0 -or $count -gt 65536) { return $null }
+        return (-join $buffer[0..($count - 1)]) | ConvertFrom-Json
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Show-ShadowWarning([string]$HomeDir) {
     $remaining = @()
     $shadow = $false
@@ -120,7 +138,7 @@ function Show-ShadowWarning([string]$HomeDir) {
                 try {
                     $item = Get-Item -LiteralPath $manifest -Force
                     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
-                        $plugin = [IO.File]::ReadAllText($manifest) | ConvertFrom-Json
+                        $plugin = Read-PluginManifest $manifest
                         $isIq = $plugin.name -ceq 'iq'
                     }
                 }

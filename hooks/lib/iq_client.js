@@ -401,6 +401,8 @@ export function parseTaskBlock(value) {
 }
 
 function responseJson(text) {
+
+  if (typeof text !== 'string' || text.length > MAX_RESPONSE_BYTES || new TextEncoder().encode(text).length > MAX_RESPONSE_BYTES) return null
   try { return JSON.parse(text) } catch (_) { return null }
 }
 
@@ -478,20 +480,88 @@ export function classifyResponse(res) {
 }
 
 
+
+function scrubSecretLines(text) {
+  const labels = /(?<![\w.-])([\w.-]+)(["']?\s*[:=])/g
+  const lineBreak = c => c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029'
+  let scanned = 0, lineStart = 0, start = null, end = 0, cursor = 0, out = ''
+  for (const match of text.matchAll(labels)) {
+    const secret = /\b(?:password|passwd|secret)/i.test(match[1])
+    const cookie = /\b(?:set-cookie|cookie)$/i.test(match[1]) && match[2].trim() === ':'
+    if (!secret && !cookie) continue
+    while (scanned < match.index) { if (lineBreak(text[scanned])) lineStart = scanned + 1; scanned++ }
+
+
+    if (start !== null && lineStart > start && lineStart < end) continue
+    const markerEnd = match.index + match[0].length
+    if (start !== null && lineStart > end) {
+      out += text.slice(cursor, start) + '[secret line]'; cursor = end; start = null
+    }
+    if (start === null) start = lineStart
+    if (markerEnd > end) {
+      end = markerEnd
+      while (end < text.length && !lineBreak(text[end])) end++
+    }
+  }
+  return start === null ? text : out + text.slice(cursor, start) + '[secret line]' + text.slice(end)
+}
+
+function scrubUrlCredentials(text) {
+  const schemes = /(?<![a-z0-9+.-])([a-z0-9+.-]+):\/\//gi
+  const credentials = /[^\s/@]*/y
+  let match, cursor = 0, out = ''
+  while ((match = schemes.exec(text)) !== null) {
+    if (!/[a-z]/i.test(match[1])) continue
+    credentials.lastIndex = schemes.lastIndex
+    const segment = credentials.exec(text)[0]
+
+
+    if (text[credentials.lastIndex] !== '@' || segment.lastIndexOf(':') < 1) continue
+    out += text.slice(cursor, schemes.lastIndex) + '[key]@'
+    cursor = credentials.lastIndex + 1; schemes.lastIndex = cursor
+  }
+  return out + text.slice(cursor)
+}
+
+function scrubAssignments(text) {
+  const labels = /(?<![\w.-])([\w.-]+)(["']?\s*[:=]\s*["']?)/g
+  const values = /[^\s"',;]+/y
+  let match, cursor = 0, out = ''
+  while ((match = labels.exec(text)) !== null) {
+    if (!/(?:authorization|x-api-key|api[-_]?key|token|pwd|pass|auth)/i.test(match[1])) continue
+    values.lastIndex = labels.lastIndex
+    const value = values.exec(text)
+    if (!value) continue
+
+
+
+    if (/(?:^|[._-])(?:proxy[-_])?authorization$/i.test(match[1]) &&
+        /^(?:Basic|Digest|Negotiate|NTLM|Token|ApiKey|OAuth)$/i.test(value[0])) {
+      while (values.lastIndex < text.length && !/[\r\n\u2028\u2029]/.test(text[values.lastIndex])) values.lastIndex++
+    }
+    out += text.slice(cursor, value.index) + '[key]'
+    cursor = values.lastIndex; labels.lastIndex = cursor
+  }
+  return out + text.slice(cursor)
+}
+
+
 export function scrub(text, secrets) {
   let s = typeof text === 'string' ? text : String(text)
   for (const k of secrets || []) {
     if (typeof k === 'string' && k.length > 0) s = s.split(k).join('[key]')
   }
-  return s
-    .replace(/-----BEGIN [^\r\n]*(?:\r?\n|$)[\s\S]*?(?:-----END [^\r\n]*(?:\r?\n|$)|$)/g, '[key]')
-    .replace(/^.*(?:\b(?:password|passwd|secret)[\w.-]*[\"']?\s*[:=]|\b(?:set-cookie|cookie)\s*:).*$/gim, '[secret line]')
+  s = s.replace(/-----BEGIN [^\r\n]*(?:\r?\n|$)[\s\S]*?(?:-----END [^\r\n]*(?:\r?\n|$)|$)/g, '[key]')
+  s = scrubSecretLines(s)
+  s = s
     .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, '[key]')
     .replace(/\bAIza[A-Za-z0-9_-]{35}\b/g, '[key]')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+:[^\s/@]*@/gi, '$1[key]@')
+  s = scrubUrlCredentials(s)
+  s = s
     .replace(/[0-9a-f]{32,}/gi, '[key]')
     .replace(/bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [key]')
-    .replace(/(\b[\w.-]*(?:authorization|x-api-key|api[-_]?key|token|pwd|pass|auth)[\w.-]*)(["']?\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1$2[key]')
+  s = scrubAssignments(s)
+  return s
     .replace(/\b\d{3}-\d{2}-\d{4}\b/g, '[private]')
     .replace(/\beyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+){0,2}\b/g, '[key]')
     .replace(/\b(?:sk|iq|ik|rk|pk|key|tok|token)[-_][A-Za-z0-9_-]{12,}\b/gi, '[key]')

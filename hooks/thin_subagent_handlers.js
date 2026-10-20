@@ -1,5 +1,6 @@
 
 
+import { readAuthStatus } from './lib/auth_process.js'
 import * as State from './lib/state.js'
 import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { resolveBase, planSubagent, effortFor, safeSpawnModel, gateSpawn, SUB_TEXT, readOnlyTools, readAliasHost } from './lib/subagents.js'
@@ -15,10 +16,7 @@ import { SAVINGS_MODES_ENABLED, USAGE_REPORTS_ENABLED, LIMIT_AWARE_ENABLED } fro
 function limitAccess($) {
   return {
     authorize: () => $.session.authorize(),
-    authStatus: async () => {
-      const result = await $.process.run(['claude', 'auth', 'status'])
-      return result?.exitCode === 0 ? result.stdout : null
-    },
+    authStatus: () => readAuthStatus(iqAccess($)),
     apiKeyPresent: async () => {
       const value = await $.env.get('ANTHROPIC_API_KEY')
       return typeof value === 'string' && value.trim() !== ''
@@ -42,6 +40,7 @@ function iqAccess($, ctx) {
     configured: () => ctx.pluginKey ? ctx.pluginKey() : undefined,
     home: async () => homeFrom(await $.env.get('USERPROFILE'), await $.env.get('HOME')),
     exists: (path) => $.fs.exists(path),
+    stat: (path) => $.fs.stat(path),
     read: (path) => $.fs.read(path),
     user: () => $.settings.read({ source: 'user' }),
     readSettings: (source) => $.settings.read({ source }),

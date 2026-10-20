@@ -23,10 +23,11 @@ export function newSettingsClient({ now, later, fetch, onResult }) {
       try { if (timer) timer.cancel() } catch (_) {}
       try { onResult(value) } catch (_) {}
     }
-    timer = later(SETTINGS_TIMEOUT_MS, () => finish(null))
+    try { timer = later(SETTINGS_TIMEOUT_MS, () => finish(null)) }
+    catch (_) { inFlight = false; finish(null); return false }
 
 
-    Promise.resolve().then(() => ended ? null : fetch(req.url, req.init)).then(
+    Promise.resolve().then(() => ended || finished ? null : fetch(req.url, req.init)).then(
       (res) => finish(parseSettingsResponse(res)), () => finish(null),
     ).finally(() => { inFlight = false })
     return true

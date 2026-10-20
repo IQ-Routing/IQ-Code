@@ -93,15 +93,19 @@ export function newForecastClient({ nonce, now, later, fetch, onChange }) {
       const deadline = now() + FORECAST_TIMEOUT_MS
 
 
-      const timer = later(FORECAST_TIMEOUT_MS, () => { if (alive && generation === gen && busy) { generation += 1; clear('unavailable') } })
+      let timer
+      try { timer = later(FORECAST_TIMEOUT_MS, () => { if (alive && generation === gen && busy) { generation += 1; clear('unavailable') } }) }
+      catch (_) { busy = false; clear('unavailable'); return false }
 
-      Promise.resolve().then(() => fetch(url + '/iq-code/forecast', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: 'Bearer ' + key.trim() }, body: JSON.stringify(body) })).then((res) => {
-        if (!alive) return
+      Promise.resolve().then(() => {
+        if (!alive || generation !== gen) return null
+        return fetch(url + '/iq-code/forecast', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json', authorization: 'Bearer ' + key.trim() }, body: JSON.stringify(body) })
+      }).then((res) => {
+        if (!alive || generation !== gen) return
         if (res && res.status === 402) sessionBlocked = 'not_paid'
         if (res && res.status === 404) sessionBlocked = 'unavailable'
         if (res && res.status === 429) cappedUntil = (Math.floor(now() / 86400000) + 1) * 86400000
         if (sessionBlocked || now() < cappedUntil) { clear(sessionBlocked || 'capped'); return }
-        if (generation !== gen) return
         if (now() >= deadline) { clear('unavailable'); return }
 
         if (res && res.status === 503 && forecast) { onChange({ state: 'available', reasonCode, pending: true, forecast }); return }

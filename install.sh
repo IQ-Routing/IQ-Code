@@ -61,9 +61,11 @@ fi
 # Object-depth tokenization avoids mistaking an author named iq for the plugin.
 is_iq() {
   [ -f "$1" ] && [ ! -L "$1" ] || return 1
-  awk '
+  # A warning must not load an arbitrarily large legacy manifest into memory.
+  dd bs=65537 count=1 < "$1" 2>/dev/null | LC_ALL=C awk '
     { text = text $0 "\n" }
     END {
+      if (length(text) > 65536) exit 1
       depth = 0; key = ""; value = 0
       for (i = 1; i <= length(text); i++) {
         c = substr(text, i, 1)
@@ -86,7 +88,7 @@ is_iq() {
       }
       exit 1
     }
-  ' "$1"
+  '
 }
 shell_quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\\\\''/g"; printf "'"; }
 remaining=

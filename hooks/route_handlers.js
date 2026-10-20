@@ -1,6 +1,7 @@
 import { LIMIT_AWARE_ENABLED } from './lib/usage_flags.js'
 
 
+import { readAuthStatus } from './lib/auth_process.js'
 import { registerThinSubagents } from './thin_subagent_handlers.js'
 import * as State from './lib/state.js'
 import { FORCE_SERVER } from './lib/runtime_mode.js'
@@ -16,10 +17,7 @@ import { forecastSpend, forecastUnpriced } from './lib/tracker.js'
 function limitAccess($) {
   return {
     authorize: () => $.session.authorize(),
-    authStatus: async () => {
-      const result = await $.process.run(['claude', 'auth', 'status'])
-      return result?.exitCode === 0 ? result.stdout : null
-    },
+    authStatus: () => readAuthStatus(iqAccess($)),
     apiKeyPresent: async () => {
       const value = await $.env.get('ANTHROPIC_API_KEY')
       return typeof value === 'string' && value.trim() !== ''
@@ -33,7 +31,10 @@ function iqAccess($) {
   return {
     configured: () => C && C.pluginKey ? C.pluginKey() : undefined,
     home: async () => homeFrom(await $.env.get('USERPROFILE'), await $.env.get('HOME')),
+    readSettings: (source) => $.settings.read({ source }),
+    run: (argv, init) => $.process.run(argv, init),
     exists: (path) => $.fs.exists(path),
+    stat: (path) => $.fs.stat(path),
     read: (path) => $.fs.read(path),
     user: () => $.settings.read({ source: 'user' }),
     nonessential: () => $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'),
@@ -126,7 +127,7 @@ function reset($, sessionStart = false) {
     if (sid !== session || !(await allowed($))) return null
     if (LIMIT_AWARE_ENABLED && C.refreshLimits) await C.refreshLimits(limitAccess($))
     const nowMs = await $.clock.now()
-    if (sid !== session || ended || statusOf(C.getR(), nowMs) !== 'on' || LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(nowMs)) return null
+    if (await trafficOff(iqAccess($)) || sid !== session || ended || statusOf(C.getR(), nowMs) !== 'on' || LIMIT_AWARE_ENABLED && C.noUsage && C.noUsage(nowMs)) return null
     return $.http.fetch(url, init)
   }, onChange: (answer) => { if (!ended && enabled()) publish($, answer) } })
 

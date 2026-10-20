@@ -1,5 +1,18 @@
+import { writeSettingsStore } from './settings_store.js'
 
+import { fileProjectionReader, projectEnvNames, steersLaunch } from './util.js'
 export const truthy = (v) => typeof v === 'string' && v.trim() !== '' && !['0', 'false', 'no', 'off'].includes(v.trim().toLowerCase())
+
+
+
+
+
+export const HELPER_PROCESS_ENV = {
+  NODE_OPTIONS: '', NODE_PATH: '', LD_PRELOAD: '', LD_LIBRARY_PATH: '', LD_AUDIT: '',
+  DYLD_INSERT_LIBRARIES: '', DYLD_LIBRARY_PATH: '', DYLD_FRAMEWORK_PATH: '',
+  DYLD_FALLBACK_LIBRARY_PATH: '', DYLD_FALLBACK_FRAMEWORK_PATH: '',
+  PYTHONPATH: '', PYTHONHOME: '', PYTHONSTARTUP: '', BASH_ENV: '', ENV: '',
+}
 
 export function homeFrom(profile, home) {
   for (const value of [profile, home]) {
@@ -17,20 +30,35 @@ export function pathIn(base, ...parts) {
 }
 
 
-export async function processTrusted(readSettings) {
-  try {
-    for (const source of ['project', 'local']) {
-      const settings = await readSettings(source)
-      if (!settings || typeof settings !== 'object') return false
-      const env = settings.env || {}
-      if (['HOME', 'USERPROFILE', 'SystemRoot', 'CLAUDE_CONFIG_DIR'].some((key) => Object.prototype.hasOwnProperty.call(env, key))) return false
-    }
-    return true
-  } catch (_) { return false }
+
+
+async function projectEnvFree(readSettings, names, steers = () => false) {
+  const set = await projectEnvNames(readSettings)
+  return set !== null && ![...set].some(name => names.includes(name) || steers(name))
 }
 
+
+const HOME_ENV = ['HOME', 'USERPROFILE', 'SYSTEMROOT', 'CLAUDE_CONFIG_DIR']
+
+
+
+export const homeTrusted = (readSettings) => projectEnvFree(readSettings, HOME_ENV)
+
+
+
+
+
+
+export const processTrusted = (readSettings) => projectEnvFree(readSettings, [...HOME_ENV,
+  'PATH', 'PATHEXT', 'COMSPEC', ...Object.keys(HELPER_PROCESS_ENV)], steersLaunch)
+
+
+
+
+
+
 export async function trustedSettingsHome(access) {
-  if (!(await processTrusted(access.readSettings))) return null
+  if (!(await homeTrusted(access.readSettings))) return null
   try { return homeFrom(undefined, await access.home()) } catch (_) { return null }
 }
 
@@ -41,114 +69,37 @@ export function storedUsageReporting(settings) {
   return !Object.hasOwn(settings, 'usageReporting') || settings.usageReporting === 'on' ? 'on' : 'off'
 }
 
-export async function readUsageReporting(access) {
+const settingsFile = fileProjectionReader(text => {
+  const value = JSON.parse(text)
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+})
+const credentialFile = fileProjectionReader(text => validKey(text))
+
+
+
+export async function readDeviceSettings(access) {
   try {
     const home = await trustedSettingsHome(access)
-    if (!home) return 'off'
-    const target = pathIn(home, '.claude/iq/settings.json')
-    const exists = await access.exists(target)
-    if (exists === false) return 'on'
-    if (exists !== true) return 'off'
-    const text = await access.read(target)
-    if (typeof text !== 'string') return 'off'
-    return storedUsageReporting(JSON.parse(text))
-  } catch (_) { return 'off' }
+    return home ? await settingsFile(access, pathIn(home, '.claude/iq/settings.json')) : null
+  } catch (_) { return null }
+}
+
+export function invalidateDeviceSettings(path) { settingsFile.invalidate(path) }
+
+export async function readUsageReporting(access) {
+  return storedUsageReporting(await readDeviceSettings(access))
 }
 
 
-
-const SETTINGS_TRANSACTION = `
-const fs = require('node:fs'), path = require('node:path');
-const target = process.argv[1], patch = JSON.parse(process.argv[2]);
-const lock = target + '.lock';
-const reclaim = lock + '.reclaim';
-(async () => {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  let fd;
-  for (let attempt = 0; attempt < 200; attempt++) {
-    try { fd = fs.openSync(lock, 'wx', 0o600); break; }
-    catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      let reclaiming = false;
-      try {
-        // A process can die while holding cleanup. Its marker expires after
-        // thirty seconds; ordinary cleanup holds it only for synchronous I/O.
-        try { if (Date.now() - fs.statSync(reclaim).mtimeMs > 30000) fs.rmdirSync(reclaim); }
-        catch (markerError) { if (markerError.code !== 'ENOENT') throw markerError; }
-        fs.mkdirSync(reclaim); reclaiming = true;
-        // Inspect only after claiming cleanup. Another saver may have replaced
-        // the abandoned lock while this process was waiting for cleanup.
-        if (Date.now() - fs.statSync(lock).mtimeMs > 10000) { fs.unlinkSync(lock); continue; }
-      } catch (lockError) { if (lockError.code === 'ENOENT') continue; if (lockError.code !== 'EEXIST') throw lockError; }
-      finally { if (reclaiming) { try { fs.rmdirSync(reclaim); } catch (error) { if (error.code !== 'ENOENT') throw error; } } }
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-  }
-  if (fd === undefined) throw Error('settings_lock_busy');
-  const temporary = target + '.' + process.pid + '.tmp';
-  let temporaryCreated = false;
-  try {
-    let current = {}, recovered = false;
-    try { current = JSON.parse(fs.readFileSync(target, 'utf8')); }
-    catch (error) { if (error instanceof SyntaxError) recovered = true; else if (error.code !== 'ENOENT') throw error; }
-    if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true;
-    if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' };
-    const merged = { ...current, ...patch, v: 1 };
-    if (recovered && patch.usageReporting !== 'on') merged.usageReporting = 'off';
-    delete merged.subagentRouting; // session-only: never saved
-    // Never truncate a pre-existing file or follow a planted temporary symlink.
-    fs.writeFileSync(temporary, JSON.stringify(merged, null, 1) + '\\n', { mode: 0o600, flag: 'wx' });
-    temporaryCreated = true;
-    fs.renameSync(temporary, target);
-    process.stdout.write(JSON.stringify(Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))));
-  } finally {
-    if (temporaryCreated) { try { fs.unlinkSync(temporary); } catch (_) {} }
-    fs.closeSync(fd);
-    fs.unlinkSync(lock);
-  }
-})().catch(() => { process.exitCode = 1; });
-`
 
 export async function writeTrustedSettings(access, text, patch) {
   const home = await trustedSettingsHome(access)
   if (!home) throw new Error('settings_home_untrusted')
   const changes = patch === undefined ? JSON.parse(text) : patch
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('settings_patch_invalid')
-  const target = pathIn(home, '.claude/iq/settings.json')
-
-  const candidates = /^[A-Za-z]:[\\/]/.test(home)
-    ? [home.slice(0, 2) + '\\Program Files\\nodejs\\node.exe']
-    : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
-  if (typeof access.run === 'function') for (const executable of candidates) {
-    try {
-      const result = await access.run([executable, '-e', SETTINGS_TRANSACTION, target, JSON.stringify(changes)], { timeoutMs: 5000, env: { NODE_OPTIONS: '', NODE_PATH: '' } })
-      if (result?.exitCode === 0) return JSON.parse(result.stdout || '{}')
-      break
-    } catch (error) {
-      if (error?.code === 'ENOENT' || /\bENOENT\b/.test(String(error?.message))) continue
-      break
-    }
-  }
-
-
-
-  const exists = await access.exists(target)
-  if (exists !== true && exists !== false) throw new Error('settings_read_unavailable')
-  let current = {}, recovered = false
-  if (exists) {
-    const stored = await access.read(target)
-    try { current = JSON.parse(stored) }
-    catch (error) { if (error instanceof SyntaxError) recovered = true; else throw error }
-    if (!current || typeof current !== 'object' || Array.isArray(current)) recovered = true
-  }
-
-
-  if (recovered) current = { keepRoutingOn: false, authBlocked: true, routingEligible: false, usageReporting: 'off' }
-  const merged = { ...current, ...changes, v: 1 }
-  if (recovered && changes.usageReporting !== 'on') merged.usageReporting = 'off'
-  delete merged.subagentRouting
-  await access.write(target, JSON.stringify(merged, null, 1) + '\n')
-  return Object.fromEntries(['keepRoutingOn', 'authBlocked', 'routingEligible', 'usageReporting'].filter(key => Object.hasOwn(merged, key)).map(key => [key, merged[key]]))
+  const saved = await writeSettingsStore(access, home, changes, HELPER_PROCESS_ENV)
+  invalidateDeviceSettings(pathIn(home, '.claude/iq/settings.json'))
+  return saved
 }
 
 
@@ -190,9 +141,8 @@ export async function readKey(access) {
     if (configured !== undefined && configured !== null && configured !== '') return validKey(configured)
     const home = await access.home()
     if (!home) return null
-    const exists = await access.exists(pathIn(home, '.claude/iq/key'))
-    if (exists === true) return validKey(await access.read(pathIn(home, '.claude/iq/key')))
-    if (exists !== false) return null
+    const fileKey = await credentialFile(access, pathIn(home, '.claude/iq/key'))
+    if (fileKey !== undefined) return fileKey
 
 
     const user = await access.user()

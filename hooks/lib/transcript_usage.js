@@ -1,5 +1,7 @@
 
 
+import { HELPER_PROCESS_ENV, processTrusted } from './traffic.js'
+import { projectEnvNames, steersProgram } from './util.js'
 function count(value) { return Number.isSafeInteger(value) && value >= 0 ? value : undefined }
 export function usageNumbers(u) {
   if (!u || typeof u !== 'object') return null
@@ -117,7 +119,10 @@ function readUsageIncrement(target, options, fs, bytes) {
   const limit = incrementalReadLimit(options.maxBytes)
   let fd, bytesRead = 0
   try {
-    fd = fs.openSync(target, 'r')
+
+
+    if (fs.lstatSync(target).isSymbolicLink()) throw Error('not_file')
+    fd = fs.openSync(target, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0))
     const stat = fs.fstatSync(fd)
     if (!stat.isFile()) throw Error('not_file')
     const old = options.cursor
@@ -174,7 +179,11 @@ function readUsageIncrement(target, options, fs, bytes) {
       offset, scanOffset, discarding, catchingUp: !tail && end < stat.size,
       sourceStartMs: sourceStartMs ?? null, lastMs: lastMs ?? null, pendingGap,
       lastMain: read.lastMain ?? (continuing ? old.lastMain ?? null : null) } }
-  } catch (_) { return usageSkipped('transcript_unavailable', bytesRead) }
+  } catch (error) {
+    const fileRefused = error?.message === 'not_file' ||
+      ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'EISDIR', 'ELOOP', 'ENXIO', 'EAGAIN'].includes(error?.code)
+    return { ...usageSkipped('transcript_unavailable', bytesRead), ...(fileRefused ? { fileRefused: true } : {}) }
+  }
   finally { if (fd !== undefined) fs.closeSync(fd) }
 }
 
@@ -220,26 +229,51 @@ export async function readTranscriptUsage(access, path, { sinceMs = null, asOfMs
   const prior = state?.path === path ? state : null
   const unavailable = (reason = 'transcript_unavailable') => ({ ...usageSkipped(reason), calls: prior?.calls || [], state: prior })
   if (typeof access?.run !== 'function' || typeof path !== 'string' || !path.endsWith('.jsonl')) return unavailable()
+
+
+
+
+  if (steersProgram(await projectEnvNames(access.readSettings), 'node', HELPER_PROCESS_ENV)) return unavailable('reader_unavailable')
   const runtime = globalThis.process
-  const fixed = /^[A-Za-z]:[\\/]/.test(path)
+  const windows = /^[A-Za-z]:[\\/]/.test(path)
+  const fixed = windows
     ? [path.slice(0, 2) + '\\Program Files\\nodejs\\node.exe']
     : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']
-  const candidates = [...new Set(fixed.concat(runtime?.release?.name === 'node' && typeof runtime.execPath === 'string'
-    ? [runtime.execPath, 'node'] : ['node']))]
+  const runningNode = runtime?.release?.name === 'node' && typeof runtime.execPath === 'string' &&
+    /^(?:\/(?!\/)|[A-Za-z]:[\\/])/.test(runtime.execPath) ? runtime.execPath : null
+  const candidates = [...new Set(fixed.concat(runningNode ? [runningNode] : [], ['node']))]
+
+
+
+  const searchPath = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+  if (!windows && runningNode) searchPath.push(runningNode.slice(0, runningNode.lastIndexOf('/')))
+
+  let inherited
+  const inheritsPath = async () => {
+    if (inherited === undefined) inherited = typeof access.readSettings === 'function' && await processTrusted(access.readSettings)
+    return inherited
+  }
   const cursor = prior ? Object.fromEntries(['path', 'dev', 'ino', 'size', 'offset', 'scanOffset', 'discarding',
     'catchingUp', 'sourceStartMs', 'lastMs', 'pendingGap', 'lastMain'].map(key => [key, prior[key]])) : null
   let readerRan = false
   for (const executable of candidates) {
+
+    const bare = executable === 'node', inherit = bare && await inheritsPath()
+    if (bare && windows && !inherit) continue
     try {
       const result = await access.run([executable, '-e', TRANSCRIPT_READ, path,
         JSON.stringify({ maxBytes: incrementalReadLimit(maxBytes), cursor, asOfMs, helper })],
-      { timeoutMs: 2000, env: { NODE_OPTIONS: '', NODE_PATH: '' } })
+      { timeoutMs: 2000, env: { ...HELPER_PROCESS_ENV, ...(!windows && !inherit ? { PATH: searchPath.join(':') } : {}) },
+        ...(bare && windows ? { cwd: path.slice(0, 2) + '\\Windows' } : {}) })
 
       if (result?.timedOut || result?.signal === 'SIGTERM' || result?.signal === 'SIGKILL') { readerRan = true; break }
       if (result?.exitCode !== 0) continue
       const projected = JSON.parse(result.stdout || '{}')
       if (!Array.isArray(projected.calls) || !Array.isArray(projected.issues)) continue
       readerRan = true
+
+
+      if (projected.fileRefused === true && projected.skipped === true && projected.reason === 'transcript_unavailable') return unavailable()
       if (!projected.cursor) continue
       const calls = new Map((prior?.calls || []).map(call => [call.messageId, call]))
       let duplicates = projected.duplicates || 0

@@ -1,5 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
+rem Do not resolve bootstrap executables from an untrusted working directory.
+set "NoDefaultCurrentDirectoryInExePath=1"
 rem Installs iq-code@iq-routing; hidden key input and stdin-only configure are handled by install.ps1.
 rem Standalone CMD entry point: it downloads the HTTPS copy of install.ps1 and runs that.
 set "iq_args="

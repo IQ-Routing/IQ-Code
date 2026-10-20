@@ -1,4 +1,4 @@
-# IQ Code 1.2.2
+# IQ Code 1.2.3
 
 IQ Code is a Claude Code plugin from IQ Routing. With routing on, the band shows one line: `IQ · Sonnet 5.5 · high`. It shows your current model and thinking level, omitting the thinking level when there is none. Routing off hides the band; paused routing shows `IQ · paused (/iq)`. Open `/iq` for Home, Routing, Cost, Plan, and Settings.
 

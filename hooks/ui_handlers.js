@@ -8,6 +8,7 @@
 
 
 
+import { readAuthStatus } from './lib/auth_process.js'
 import { parseFrames, frameAt, frameMs, svgFrameAt, svgFrameMs, TEXT_MARK } from './lib/logo.js'
 import { buildView, cleanSettings, setStateModule, servedOf, DEFAULT_SETTINGS } from './lib/view_model.js'
 import { skinTabs, bandRows, spinnerStatus, tagOf, cardLine, turnLine, noticeModel, hintTail, WORDS } from './lib/skin.js'
@@ -16,7 +17,7 @@ import { safeErr, scrub, destinationFrom, displayText } from './lib/iq_client.js
 import { VERSION } from './lib/pins.js'
 import { authCommandMatches } from './lib/login_pane.js'
 import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED } from './lib/release_flags.js'
-import { readKey, trafficOff, trustedSettingsHome, writeTrustedSettings } from './lib/traffic.js'
+import { readKey, trafficOff, trustedSettingsHome, writeTrustedSettings, HELPER_PROCESS_ENV } from './lib/traffic.js'
 
 import { cleanFields, issueUrl, SUPPORT_EMAIL } from './lib/feedback.js'
 import { SAVINGS_MODES_ENABLED, USAGE_REPORTS_ENABLED, LIMIT_AWARE_ENABLED } from './lib/usage_flags.js'
@@ -28,16 +29,23 @@ import { savingsModes } from './lib/savings_modes.js'
 function limitAccess($) {
   return {
     authorize: () => $.session.authorize(),
-    authStatus: async () => {
-      const result = await $.process.run(['claude', 'auth', 'status'])
-      return result?.exitCode === 0 ? result.stdout : null
-    },
+    authStatus: () => readAuthStatus(iqAccess($)),
     apiKeyPresent: async () => {
       const value = await $.env.get('ANTHROPIC_API_KEY')
       return typeof value === 'string' && value.trim() !== ''
     },
     usage: () => $.session.usage(),
     now: () => $.clock.now(),
+  }
+}
+
+
+function iqAccess($) {
+  return {
+    home: () => userHome($),
+    readSettings: (source) => $.settings.read({ source }),
+    exists: (path) => $.fs.exists(path),
+    run: (argv, init) => $.process.run(argv, init),
   }
 }
 
@@ -268,7 +276,7 @@ async function ensureLoaded($) {
 }
 
 async function uiStart($) {
-  U.home = await userHome($)
+  U.home = await trustedSettingsHome(iqAccess($))
   const root = $.plugin.root
   const text = await safe($.fs.read(pathIn(root, 'data/logo_frames.json')))
   U.frames = typeof text === 'string' ? parseFrames(text) : null
@@ -370,6 +378,7 @@ async function noteError($, where, err) {
     configured: () => H && H.pluginKey ? H.pluginKey() : undefined,
     home: () => U.home,
     exists: (path) => $.fs.exists(path),
+    stat: (path) => $.fs.stat(path),
     read: (path) => $.fs.read(path),
     user: () => $.settings.read({ source: 'user' }),
   })
@@ -812,11 +821,16 @@ async function drawPane($, e, next) {
 
 async function osLabel($) {
   if (await safe($.env.get('OS')) === 'Windows_NT') return 'Windows'
-  const uname = await safe($.process.run(['uname', '-s']))
-  const name = uname && uname.exitCode === 0 && typeof uname.stdout === 'string' ? uname.stdout.trim() : ''
+
+  let name = ''
+  for (const executable of ['/usr/bin/uname', '/bin/uname']) {
+    const uname = await safe($.process.run([executable, '-s'], { timeoutMs: 5000, cwd: '/', env: { ...HELPER_PROCESS_ENV } }))
+    name = uname && uname.exitCode === 0 && typeof uname.stdout === 'string' ? uname.stdout.trim() : ''
+    if (name !== '') break
+  }
   if (name === 'Linux') return 'Linux'
   if (name !== 'Darwin') return 'unknown'
-  const version = await safe($.process.run(['sw_vers', '-productVersion']))
+  const version = await safe($.process.run(['/usr/bin/sw_vers', '-productVersion'], { timeoutMs: 5000, cwd: '/', env: { ...HELPER_PROCESS_ENV } }))
   const value = version && version.exitCode === 0 && typeof version.stdout === 'string' ? version.stdout.trim() : ''
   return /^\d+(\.\d+){1,2}$/.test(value) ? 'macOS ' + value : 'macOS'
 }

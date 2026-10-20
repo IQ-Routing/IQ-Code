@@ -54,6 +54,7 @@ import { measuredSpendLine, estimatedSavingsText, SAVINGS_NOTE, NOTICE, noUsageL
 import { bytesFromBase64, sha256Hex, utf8, dayOf, isoOf, tailLines, mergeRows } from './lib/util.js'
 import { meterView, noteSeries } from './lib/meterview.js'
 import * as TaskState from './lib/task_state.js'
+import { writeSessionStore } from './lib/session_store.js'
 import { classify } from './lib/consequence.js'
 import { trivialTurn } from './lib/trivial_turn.js'
 import { measureCall, rebuildDebit } from './lib/measured_cost.js'
@@ -62,7 +63,8 @@ import { routeFetch } from './lib/route_transport.js'
 import { applyDataFeaturesPreference } from './lib/iq_client.js'
 import { registerUi, uiReset, uiTurnDone, uiEnd } from './ui_handlers.js'
 import { buildRouteBody, estimateRequest, consumeRouteReset, usageRequest, parseRoutingPlan, isFreePlan, routingUsage, classifyResponse, safeErr, deadlineFrom, BACKOFF_MS, destinationFrom, effortSettings, userOrigin, displayText } from './lib/iq_client.js'
-import { readKey, validKey, trafficOff, readUsageReporting, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, writeTrustedSettings, persistPlanRestriction } from './lib/traffic.js'
+import { readKey, validKey, trafficOff, readUsageReporting, readDeviceSettings, homeFrom, pathIn, credentialAccess, LOGGED_OUT_KEY, trustedSettingsHome, processTrusted, writeTrustedSettings, persistPlanRestriction, HELPER_PROCESS_ENV } from './lib/traffic.js'
+import { readAuthStatus } from './lib/auth_process.js'
 import { BROWSER_LOGIN_ENABLED, KEEP_ROUTING_ON_ENABLED, TASK_FACTS_ENABLED } from './lib/release_flags.js'
 import { registerAuth, authReset, authEnd, authOff, authCancel } from './auth_handlers.js'
 import { guessEffort, sameModel, sameChoice, canonicalModel, effortFacts, explicitModel, applicableChoice, applyChoice, effortLabel, EFFORTS, validateAnswer } from './lib/models.js'
@@ -141,6 +143,7 @@ function iqAccess($) {
     configured: () => pluginKey(),
     home: async () => homeFrom(await $.env.get('USERPROFILE'), await $.env.get('HOME')),
     exists: (path) => $.fs.exists(path),
+    stat: (path) => $.fs.stat(path),
     read: (path) => $.fs.read(path),
     user: () => $.settings.read({ source: 'user' }),
     readSettings: (source) => $.settings.read({ source }),
@@ -248,7 +251,10 @@ function startSessionDefaults($) {
   State.startSettingsSession()
   const record = { sid: M.sessionId, client: null }
   record.client = newSettingsClient({ now: () => M.nowMs, later: (ms, fn) => $.clock.after(ms, fn),
-    fetch: (url, init) => $.http.fetch(url, init),
+    fetch: async (url, init) => {
+      if (SD !== record || M.sessionId !== record.sid || await trafficOff(iqAccess($)) || SD !== record || M.sessionId !== record.sid) return null
+      return $.http.fetch(url, init)
+    },
     onResult: (value) => { if (SD === record && M.sessionId === record.sid) State.stageDashboardDefaults(value) },
   })
   SD = record
@@ -314,10 +320,7 @@ async function refreshLimits($) {
   if (!LIMIT_AWARE_ENABLED) return null
   return refreshLimitFacts({
     authorize: () => $.session.authorize(),
-    authStatus: async () => {
-      const result = await $.process.run(['claude', 'auth', 'status'])
-      return result?.exitCode === 0 ? result.stdout : null
-    },
+    authStatus: () => readAuthStatus(iqAccess($)),
     apiKeyPresent: async () => {
       const value = await $.env.get('ANTHROPIC_API_KEY')
       return typeof value === 'string' && value.trim() !== ''
@@ -993,7 +996,7 @@ async function startMeter($, e) {
   M.root = $.plugin.root
   M.startedMs = await $.clock.now()
   M.nowMs = M.startedMs
-  M.home = await userHome($)
+  M.home = await trustedSettingsHome(iqAccess($))
 
   try {
     await $.command.register({ name: 'cost-read', description: 'Cost read of this session (API-equivalent dollars)', argumentHint: '[session id]', immediate: true })
@@ -1003,13 +1006,7 @@ async function startMeter($, e) {
   }
 
   State.loadSettings(null)
-  try {
-    const home = await trustedSettingsHome(iqAccess($))
-    const path = pathIn(home, '.claude/iq/settings.json')
-    const exists = home ? await $.fs.exists(path) : null
-    if (exists === true) State.loadSettings(JSON.parse(await $.fs.read(path)))
-    else State.loadSettings(exists === false ? undefined : null)
-  } catch (_) { State.loadSettings(null) }
+  State.loadSettings(await readDeviceSettings(iqAccess($)))
   let problem = null
   try {
     problem = await loadData($)
@@ -1288,7 +1285,7 @@ async function syncCostTranscript($, path, agentId = null) {
     }
     try {
       const files = meter.costTranscriptFiles || (meter.costTranscriptFiles = new Map())
-      const read = await readTranscriptUsage({ run: (argv, options) => $.process.run(argv, options) }, path,
+      const read = await readTranscriptUsage({ run: (argv, options) => $.process.run(argv, options), readSettings: (source) => $.settings.read({ source }) }, path,
         { sinceMs: meter.bootAsOf, asOfMs: readAtMs, state: files.get(path), helper: !!agentId })
       if (tracker !== T || meter !== M || router !== R) return
       if (read.state) {
@@ -1730,28 +1727,12 @@ async function rtRestoreTask($, sid) {
   router.task = runtime.task
 }
 async function rtWriteTask($, router, path, sid, record, nowMs, closing = false) {
-  if (!router.armed && !closing) return
-  const exists = await $.fs.exists(path)
-  let old = exists ? await $.fs.read(path) : ''
-  if (!router.armed && !closing) return
-  if (exists && (old === '' || !TaskState.sessionsSnapshot(old).ok)) {
 
-    old = await $.fs.read(path)
-    if (typeof old !== 'string' || !router.armed && !closing) return
-    if (old === '' || !TaskState.sessionsSnapshot(old).ok) {
-      const fresh = TaskState.sessionsText('', sid, record, nowMs)
-      if (typeof fresh !== 'string') return
-
-
-      await $.fs.write(path + '.bad', old)
-      if (!router.armed && !closing) return
-      await $.fs.write(path, fresh)
-      return
-    }
-  }
-  const text = TaskState.sessionsText(old, sid, record, nowMs)
-  if (typeof text !== 'string' || !router.armed && !closing) return
-  await $.fs.write(path, text)
+  return writeSessionStore({ ...iqAccess($), sessionFiles: {
+    exists: (path) => $.fs.exists(path),
+    read: (path) => $.fs.read(path),
+    write: (path, text) => $.fs.write(path, text),
+  } }, { sid, record, nowMs }, () => router.armed || closing)
 }
 function rtTaskTier() {
   const task = RM.task
@@ -1888,7 +1869,7 @@ async function rtStart($, e, previous = null) {
     RM.unseenHistory = typeof turns === 'number' && turns > 0
   } catch (_) {}
   RM.nowMs = await $.clock.now()
-  RM.home = await userHome($)
+  RM.home = await trustedSettingsHome(iqAccess($))
   RM.cwd = e && typeof e.cwd === 'string' ? e.cwd : null
   RM.root = $.plugin.root
   let sid = null
@@ -1943,16 +1924,8 @@ async function rtAutoArm($) {
   if (KEEP_ROUTING_ON_ENABLED !== true || !M.interactive || !RM.ready || R.armed || !sameSession()) return false
   let settings = null
   try {
-    const access = iqAccess($)
-    const home = await trustedSettingsHome(access)
-    if (home) {
-      const path = pathIn(home, '.claude/iq/settings.json')
-      const exists = await access.exists(path)
-      if (exists === true) {
-        const stored = JSON.parse(await access.read(path))
-        if (stored && typeof stored === 'object' && !Array.isArray(stored)) settings = stored
-      } else if (exists === false) settings = {}
-    }
+    const stored = await readDeviceSettings(iqAccess($))
+    settings = stored === undefined ? {} : stored
   } catch (_) {}
   if (!sameSession() || settings === null) return false
   State.refreshRoutingConsent(settings)
@@ -2276,7 +2249,7 @@ async function rtFetch($, req, deadlineMs, runtime, requestEpoch) {
   const callMs = await $.clock.now()
   return routeFetch({ fetch: async (url, init) => {
     State.refreshUsageReporting(await readUsageReporting(iqAccess($)))
-    if (await rtFastMode(fastAccess($)) || !R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch || deadlineMs <= await $.clock.now()) return null
+    if (await rtFastMode(fastAccess($)) || deadlineMs <= await $.clock.now() || await trafficOff(iqAccess($)) || !R.armed || RM !== runtime || RM.requestEpoch !== requestEpoch) return null
     consumeRouteReset(R, req)
     State.noteRouteCall(M.sessionId, callMs)
     applyDataFeaturesPreference(req, State.getSetting('usageReporting'))
