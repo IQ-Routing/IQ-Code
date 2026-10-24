@@ -1,5 +1,5 @@
 export const NAME = 'iq-code'
-export const VERSION = '1.2.3'
+export const VERSION = '1.2.4'
 export const CARD_FILE = 'data/rate_card_2026-10-16.json'
 export const PIN_CARD = '093cabef3a7ae0acee793e6c3701c36ecd8380e0fc323cee4cd099df43e4c03b'
 export const DATA_DIR = '.claude/iq/meter'

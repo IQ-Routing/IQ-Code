@@ -1,6 +1,7 @@
 import { writeSettingsStore } from './settings_store.js'
+import { ERROR_LOG_CAP } from './pins.js'
 
-import { fileProjectionReader, projectEnvNames, steersLaunch } from './util.js'
+import { fileProjectionReader, isoOf, projectEnvNames, steersLaunch, tailLines } from './util.js'
 export const truthy = (v) => typeof v === 'string' && v.trim() !== '' && !['0', 'false', 'no', 'off'].includes(v.trim().toLowerCase())
 
 
@@ -92,12 +93,34 @@ export async function readUsageReporting(access) {
 
 
 
+
+
+async function noteSaveFailure(access, home, error) {
+  try {
+    if (typeof access.exists !== 'function' || typeof access.read !== 'function' || typeof access.write !== 'function') return
+    const message = String(error?.message), os = String(error?.code)
+    const code = /^settings_[a-z_]{1,40}$/.test(message) ? message : /^E[A-Z0-9]{2,20}$/.test(os) ? os : 'settings_save_failed'
+    const detail = typeof error?.detail === 'string' && /^[a-z0-9 ]{1,24}$/.test(error.detail) ? ' ' + error.detail : ''
+    const path = pathIn(home, '.claude/iq/router/errors.log')
+    const present = await access.exists(path)
+    if (present !== true && present !== false) return
+    const before = present ? await access.read(path) : ''
+    if (typeof before !== 'string') return
+    const line = isoOf(Date.now()) + ' settings.save ' + code + ' ' + (/^[A-Za-z]:[\\/]/.test(home) ? 'windows' : 'posix') + detail + '\n'
+    await access.write(path, tailLines(before + line, ERROR_LOG_CAP))
+  } catch (_) {}
+}
+
+
+
 export async function writeTrustedSettings(access, text, patch) {
   const home = await trustedSettingsHome(access)
   if (!home) throw new Error('settings_home_untrusted')
   const changes = patch === undefined ? JSON.parse(text) : patch
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('settings_patch_invalid')
-  const saved = await writeSettingsStore(access, home, changes, HELPER_PROCESS_ENV)
+  let saved
+  try { saved = await writeSettingsStore(access, home, changes, HELPER_PROCESS_ENV) }
+  catch (error) { await noteSaveFailure(access, home, error); throw error }
   invalidateDeviceSettings(pathIn(home, '.claude/iq/settings.json'))
   return saved
 }

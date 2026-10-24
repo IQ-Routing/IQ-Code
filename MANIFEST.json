@@ -1,7 +1,7 @@
 {
   "version": 1,
   "pluginId": "iq-code@iq-routing",
-  "productVersion": "1.2.3",
+  "productVersion": "1.2.4",
   "forecastSource": "server",
   "files": [
     {
@@ -12,7 +12,7 @@
     {
       "path": ".claude-plugin/plugin.json",
       "bytes": 971,
-      "sha256": "6d0030790a30bad03d77ad42d2aa47e2f77a74c11b1aab84ab0f961e53047b48"
+      "sha256": "3ff5a9298691356c74b2cb969191cf710bee54155a9697c9f4c0fbf4df57e0a4"
     },
     {
       "path": ".gitattributes",
@@ -46,8 +46,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 18553,
-      "sha256": "cc83a0a180ffc8c90076bd28638a0fcac8ddd7566e402cc89fc96367cd9d6457"
+      "bytes": 18559,
+      "sha256": "59297b1af27516aad8a680736a4816b6a3f02ca0d8b16694f528ff3d9f68084a"
     },
     {
       "path": "data/logo_frames.json",
@@ -182,7 +182,7 @@
     {
       "path": "hooks/lib/pins.js",
       "bytes": 426,
-      "sha256": "1210653f0d3a7e2dfedf098d0a4b5e35a8ee9030c9cdfc884ce6086ea3014309"
+      "sha256": "81f5362e5724c052ceb732ee7c84033ba9e7fa9fcd08ce6b136c952479ccee48"
     },
     {
       "path": "hooks/lib/plan_type.js",
@@ -241,13 +241,13 @@
     },
     {
       "path": "hooks/lib/settings_store.js",
-      "bytes": 29458,
-      "sha256": "7116d58c82ad33287e39d2e6d78fa4fafc1fc616d2d22804e9e97a08c1df4c64"
+      "bytes": 30169,
+      "sha256": "ab752258b6e1699153b430d51ab31c0cf398705cc9769fb5b7f42f761fff40fc"
     },
     {
       "path": "hooks/lib/skin.js",
       "bytes": 34855,
-      "sha256": "cef9d92a66e5a0a9f59d288be2360f8a6134eb2cc098cf2ae5c2c4b5258c1ae7"
+      "sha256": "21b50687bdc84d7b0d04b14d8aabb040aacd05d03343d3d60cf909ad27baa39f"
     },
     {
       "path": "hooks/lib/state.js",
@@ -276,8 +276,8 @@
     },
     {
       "path": "hooks/lib/traffic.js",
-      "bytes": 5799,
-      "sha256": "bc847cdfd63d252a565710a736bff5beffd240626ddfbc808c2f05f67b6e19e8"
+      "bytes": 6952,
+      "sha256": "de0b1f9c5020e6c7333795c34f395442d13cbf6d4321aa86c8a0b30937452d5f"
     },
     {
       "path": "hooks/lib/transcript_usage.js",
@@ -311,8 +311,8 @@
     },
     {
       "path": "hooks/lib/util.js",
-      "bytes": 4899,
-      "sha256": "4c45cae65d72ec7d84c30e461d82b55d04201ae1cb455cf7a1b135e24d6c4b21"
+      "bytes": 5185,
+      "sha256": "fde28afd601616f4b89c5d7b50fa66dec5a57f3bec30d942e7952acf9d507aec"
     },
     {
       "path": "hooks/lib/view_model.js",
@@ -341,13 +341,13 @@
     },
     {
       "path": "install.cmd",
-      "bytes": 1984,
-      "sha256": "ba4b06b43f253600721af64354a24bf7e8b622b21bb8edc3cba9a5611c1f74b2"
+      "bytes": 2095,
+      "sha256": "0aeb68a6d8f7d4bb2083b774862b81f7ac7da39e48cde0e0905842949c110610"
     },
     {
       "path": "install.ps1",
-      "bytes": 11071,
-      "sha256": "9c00bdf477c714bd71659e8c41afcc87efbb120f25688e0a85f1a134b5d30723"
+      "bytes": 11829,
+      "sha256": "374289cdacdd97116db56e8825002cd17965fcd7566fbcd0cc8e65fa9f58d18a"
     },
     {
       "path": "install.sh",

@@ -1,4 +1,4 @@
-# IQ Code 1.2.3
+# IQ Code 1.2.4
 
 IQ Code is a Claude Code plugin from IQ Routing. With routing on, the band shows one line: `IQ · Sonnet 5.5 · high`. It shows your current model and thinking level, omitting the thinking level when there is none. Routing off hides the band; paused routing shows `IQ · paused (/iq)`. Open `/iq` for Home, Routing, Cost, Plan, and Settings.
 
@@ -62,7 +62,7 @@ irm https://iq-routing.com/install.ps1 | iex
 In Windows Command Prompt:
 
 ```bat
-curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && install.cmd && del install.cmd
+curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && .\install.cmd && del install.cmd
 ```
 
 If you downloaded `install.ps1`, you can also run it as a file:
@@ -201,8 +201,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 Windows Command Prompt installer:
 
 ```bat
-curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && install.cmd --uninstall && del install.cmd
-curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && install.cmd --uninstall --purge && del install.cmd
+curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && .\install.cmd --uninstall && del install.cmd
+curl -fsSL https://iq-routing.com/install.cmd -o install.cmd && .\install.cmd --uninstall --purge && del install.cmd
 ```
 
 Notes:

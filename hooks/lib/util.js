@@ -159,3 +159,11 @@ export function steersProgram(names, program, blanked = {}) {
   }
   return false
 }
+
+
+
+
+export function runningNode(runtime = globalThis.process) {
+  const path = runtime?.release?.name === 'node' && typeof runtime.execPath === 'string' ? runtime.execPath : ''
+  return /^[A-Za-z]:[\\/]/.test(path) && /^node(?:\.exe)?$/i.test(path.split(/[\\/]/).pop()) ? path : null
+}

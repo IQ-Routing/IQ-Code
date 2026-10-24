@@ -5,6 +5,8 @@ set "NoDefaultCurrentDirectoryInExePath=1"
 rem Installs iq-code@iq-routing; hidden key input and stdin-only configure are handled by install.ps1.
 rem Standalone CMD entry point: it downloads the HTTPS copy of install.ps1 and runs that.
 set "iq_args="
+rem install.ps1 reads this only to word its follow-up lines for Command Prompt.
+set "IQ_CODE_LAUNCHER=cmd"
 :options
 if "%~1"=="" goto ready
 if /I "%~1"=="--uninstall" goto uninstall
@@ -24,7 +26,7 @@ set "iq_args=%iq_args% -Purge"
 shift
 goto options
 :help
-echo Usage: install.cmd [--uninstall [--purge]]
+echo Usage: .\install.cmd [--uninstall [--purge]]
 exit /b 0
 :ready
 if not defined HOME if not defined USERPROFILE (

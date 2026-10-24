@@ -1,6 +1,6 @@
 
 
-import { bytesFromBase64, projectEnvNames, steersProgram } from './util.js'
+import { bytesFromBase64, projectEnvNames, runningNode, steersProgram } from './util.js'
 export const SETTINGS_TRANSACTION = String.raw`
 const fs = require('node:fs'), path = require('node:path');
 let target = process.argv[1];
@@ -460,6 +460,8 @@ finally:
 
 
 
+
+
 const missingRuntime = error => {
   const message = String(error?.message)
   if (/\bfailed to start\b/i.test(message)) return true
@@ -489,8 +491,29 @@ const SETTINGS_FILE = '.claude/iq/settings.json'
 
 export const SETTINGS_HELPER_PATH = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 const noRuntime = () => new Error('settings_runtime_unavailable')
+
+
+const failed = detail => Object.assign(new Error('settings_transaction_failed'), { detail })
 const fileIn = (home, relative) => /^[A-Za-z]:[\\/]/.test(home)
   ? home.replace(/[\\/]+$/, '') + '\\' + relative.replace(/\//g, '\\') : home.replace(/[\\/]+$/, '') + '/' + relative
+
+
+
+
+
+
+async function notThere(access, path) {
+  if (typeof access.exists !== 'function') return false
+  try { return await access.exists(path) === false }
+  catch (_) { return false }
+}
+
+
+
+function windowsNodes(home) {
+  const found = [runningNode(), home.slice(0, 2) + '\\Program Files\\nodejs\\node.exe']
+  return found.filter((path, index) => path !== null && found.findIndex(other => other !== null && other.toLowerCase() === path.toLowerCase()) === index)
+}
 
 async function transaction(access, home, relative, patch, processEnv, request) {
   if (typeof access.run !== 'function') throw noRuntime()
@@ -498,9 +521,8 @@ async function transaction(access, home, relative, patch, processEnv, request) {
   const target = fileIn(home, relative)
   const leaseMode = ['acquire', 'release'].includes(request?.op)
   const args = [target, JSON.stringify(patch), leaseMode ? request.op : request ? 'file' : 'settings', home]
-  const candidates = windows
-    ? [[home.slice(0, 2) + '\\Program Files\\nodejs\\node.exe', '-e', SETTINGS_TRANSACTION, ...args]]
-    : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'].map(path => [path, '-e', SETTINGS_TRANSACTION, ...args])
+  const candidates = (windows ? windowsNodes(home) : ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'])
+    .map(path => [path, '-e', SETTINGS_TRANSACTION, ...args])
   if (!windows) candidates.push(...['/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3']
     .map(path => [path, '-I', '-c', SETTINGS_PYTHON_TRANSACTION, ...args]))
   const env = { ...processEnv, ...(windows ? {} : { PATH: SETTINGS_HELPER_PATH }) }
@@ -514,20 +536,28 @@ async function transaction(access, home, relative, patch, processEnv, request) {
     if (stubbedRuntimes.has(argv[0])) continue
     if (steersProgram(steering, argv[0], processEnv)) continue
     if (argv[0] === '/usr/bin/python3' && await shimWouldPrompt(access)) continue
+
+    if (windows && await notThere(access, argv[0])) continue
     let result
     try { result = await access.run(argv, { timeoutMs: 5000, cwd: home, env: { ...env }, ...(request ? { stdin: JSON.stringify(request) } : {}) }) }
     catch (error) {
-      if (missingRuntime(error)) continue
-      throw new Error('settings_transaction_failed')
+
+      if (missingRuntime(error) || windows && await notThere(access, argv[0])) continue
+      throw failed('launch')
     }
     if (developerToolsStub(argv, result)) { stubbedRuntimes.add(argv[0]); continue }
 
 
-    if (result?.exitCode !== 0 || result.isStdoutTruncated === true || typeof result.stdout !== 'string' || result.stdout.length > 4 * 1024 * 1024) throw new Error('settings_transaction_failed')
+
+    if (result?.exitCode !== 0) {
+      if (windows && await notThere(access, argv[0])) continue
+      throw failed(Number.isInteger(result?.exitCode) ? 'exit ' + result.exitCode : 'no exit status')
+    }
+    if (result.isStdoutTruncated === true || typeof result.stdout !== 'string' || result.stdout.length > 4 * 1024 * 1024) throw failed('output')
     if (leaseMode) return
     let saved
-    try { saved = JSON.parse(result.stdout) } catch (_) { throw new Error('settings_transaction_failed') }
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw new Error('settings_transaction_failed')
+    try { saved = JSON.parse(result.stdout) } catch (_) { throw failed('output') }
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) throw failed('output')
     return saved
   }
   throw noRuntime()
@@ -576,7 +606,7 @@ export async function writeSettingsStore(access, home, changes, processEnv) {
 export async function withSessionStoreLock(access, home, action, processEnv, stillCurrent = () => true) {
   const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
   const request = { path: SESSION_FILE, token }
-  const acquire = typeof access.run !== 'function' ? {} : { readSettings: access.readSettings, run: async (argv, init) => {
+  const acquire = typeof access.run !== 'function' ? {} : { readSettings: access.readSettings, exists: access.exists, run: async (argv, init) => {
     if (await stillCurrent() !== true) throw new Error('session_save_cancelled')
     return access.run(argv, init)
   } }

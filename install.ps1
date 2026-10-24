@@ -42,7 +42,12 @@ function Set-PrivateDirectory([string]$Path) {
     $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
     $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
     [void]$acl.AddAccessRule($rule)
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    # Set-Acl needs SeSecurityPrivilege to put back an ACL the folder already holds, which fails on every reinstall
+    # after a plain uninstall. SetAccessControl on the item writes only the owner and the access rules and needs none.
+    # PowerShell 7 has it as an extension method, not on the item.
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSObject.Methods['SetAccessControl']) { $item.SetAccessControl($acl) }
+    else { [IO.FileSystemAclExtensions]::SetAccessControl($item, $acl) }
     $actual = Get-Acl -LiteralPath $Path
     if (-not $actual.AreAccessRulesProtected) { throw 'IQ data ACL inheritance is still enabled' }
     $rules = @($actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
@@ -195,7 +200,9 @@ try {
             Write-Host "IQ Code uninstalled. Removed $iqDir. The iq-routing marketplace remains registered."
         } else {
             Write-Host "IQ Code uninstalled. Left $iqDir (IQ settings, logs and any saved key). The iq-routing marketplace remains registered."
-            Write-Host 'To remove IQ data too, run install.ps1 -Uninstall -Purge.'
+            # install.cmd sets IQ_CODE_LAUNCHER so a Command Prompt user is told the Command Prompt syntax.
+            if ($env:IQ_CODE_LAUNCHER -eq 'cmd') { Write-Host 'To remove IQ data too, run .\install.cmd --uninstall --purge (download install.cmd again first if you deleted it).' }
+            else { Write-Host 'To remove IQ data too, run install.ps1 -Uninstall -Purge.' }
         }
         return
     }

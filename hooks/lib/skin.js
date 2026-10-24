@@ -33,7 +33,7 @@ function modeOf(view) {
 }
 
 
-export const PRODUCT_VERSION = '1.2.3'
+export const PRODUCT_VERSION = '1.2.4'
 
 
 export const WORDS = {
